@@ -304,12 +304,13 @@ class DDPGPolicyGraph(TFPolicyGraph):
         # target q network evalution
         with tf.variable_scope(Q_TARGET_SCOPE) as scope:
             q_tp1, _ = self._build_q_network(self.obs_tp1, observation_space,
-                                             output_actions_estimated)
+                                             action_space, output_actions_estimated)
             target_q_func_vars = _scope_vars(scope.name)
         if self.config["twin_q"]:
             with tf.variable_scope(TWIN_Q_TARGET_SCOPE) as scope:
                 twin_q_tp1, _ = self._build_q_network(
-                    self.obs_tp1, observation_space, action_space, output_actions_estimated)
+                    self.obs_tp1, observation_space, action_space,
+                    output_actions_estimated)
                 twin_target_q_func_vars = _scope_vars(scope.name)
 
         if self.config["twin_q"]:
