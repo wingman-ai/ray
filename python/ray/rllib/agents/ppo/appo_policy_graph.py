@@ -409,7 +409,6 @@ class AsyncPPOPolicyGraph(LearningRateSchedule, TFPolicyGraph):
             values, drop_last=self.config["vtrace"])
         self.stats_fetches = {
             "stats": dict({
-                "model_loss": self.model.loss(),
                 "cur_lr": tf.cast(self.cur_lr, tf.float64),
                 "policy_loss": self.loss.pi_loss,
                 "entropy": self.loss.entropy,
