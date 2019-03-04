@@ -175,12 +175,10 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
 
         def make_time_major(tensor, drop_last=False):
             """Swaps batch and trajectory axis.
-
             Args:
                 tensor: A tensor or list of tensors to reshape.
                 drop_last: A bool indicating whether to drop the last
                 trajectory item.
-
             Returns:
                 res: A tensor with swapped axes or a list of tensors with
                 swapped axes.
