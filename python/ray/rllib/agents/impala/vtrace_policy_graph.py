@@ -14,7 +14,7 @@ from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.policy_graph import PolicyGraph
 from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph, \
     LearningRateSchedule
-from ray.rllib.models.action_dist import MultiCategorical
+from ray.rllib.models.action_dist import Categorical, MultiCategorical
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.error import UnsupportedSpaceException
@@ -219,6 +219,19 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
         loss_actions = actions if is_multidiscrete else tf.expand_dims(
             actions, axis=1)
 
+        if isinstance(action_dist, MultiCategorical):
+            action_dist_inputs = list(map(lambda c: c.inputs, action_dist.cats))
+        elif isinstance(action_dist, Categorical):
+            action_dist_inputs = [action_dist.inputs]
+        else:
+            raise ValueError('Not supported action_dist distribution')
+
+        action_probs = [tf.nn.softmax(adi, axis=1) for adi in action_dist_inputs]
+        action_probs_means = [tf.reduce_mean(ap, axis=0) for ap in action_probs]
+        action_probs_max = [tf.reduce_max(apm) for apm in action_probs_means]
+        action_probs_min = [tf.reduce_min(apm) for apm in action_probs_means]
+        values_mean = tf.reduce_mean(values)
+
         # Inputs are reshaped from [B * T] => [T - 1, B] for V-trace calc.
         self.loss = VTraceLoss(
             actions=make_time_major(loss_actions, drop_last=True),
@@ -239,6 +252,9 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
             entropy_coeff=self.config["entropy_coeff"],
             clip_rho_threshold=self.config["vtrace_clip_rho_threshold"],
             clip_pg_rho_threshold=self.config["vtrace_clip_pg_rho_threshold"])
+
+        vtrace_pg_advantages_mean = tf.reduce_mean(self.loss.vtrace_returns.pg_advantages)
+        vtrace_vs_mean = tf.reduce_mean(self.loss.vtrace_returns.vs)
 
         # KL divergence between worker and learner logits for debugging
         model_dist = MultiCategorical(unpacked_outputs)
@@ -293,6 +309,34 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
             max_seq_len=self.config["model"]["max_seq_len"],
             batch_divisibility_req=self.config["sample_batch_size"])
 
+        pi_loss_abs = tf.abs(self.loss.pi_loss)
+        vf_loss_abs = tf.abs(self.loss.vf_loss * self.config["vf_loss_coeff"])
+        en_loss_abs = tf.abs(self.loss.entropy * self.config["entropy_coeff"])
+        total_influence_loss = pi_loss_abs + vf_loss_abs + en_loss_abs
+
+        if hasattr(self.model, 'lp_loss'):
+            lp_loss_abs = tf.abs(self.model.lp_loss)
+            total_influence_loss += lp_loss_abs
+        if hasattr(self.model, 'tae_loss'):
+            tae_loss_abs = tf.abs(self.model.tae_loss)
+            total_influence_loss += tae_loss_abs
+
+        influence_stats = {
+            "total_influence_loss": total_influence_loss,
+            "influence_pi_loss": pi_loss_abs / total_influence_loss,
+            "influence_vf_loss": vf_loss_abs / total_influence_loss,
+            "influence_en_loss": en_loss_abs / total_influence_loss,
+        }
+
+        if hasattr(self.model, 'lp_loss'):
+            influence_stats.update({
+                "influence_lp_loss": lp_loss_abs / total_influence_loss,
+            })
+        if hasattr(self.model, 'tae_loss'):
+            influence_stats.update({
+                "influence_tae_loss": tae_loss_abs / total_influence_loss,
+            })
+
         self.sess.run(tf.global_variables_initializer())
 
         self.stats_fetches = {
@@ -306,7 +350,17 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
                 "vf_explained_var": explained_variance(
                     tf.reshape(self.loss.vtrace_returns.vs, [-1]),
                     tf.reshape(make_time_major(values, drop_last=True), [-1])),
-            }, **self.KL_stats),
+                "values_mean": values_mean,
+                "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
+                "vtrace_vs_mean": vtrace_vs_mean,
+            },
+            **self.KL_stats,
+            **dict([(v.name + '_mean', tf.reduce_mean(g)) for g, v in self._grads_and_vars]),
+            **dict([(v.name + '_min', tf.reduce_min(g)) for g, v in self._grads_and_vars]),
+            **dict([(v.name + '_max', tf.reduce_max(g)) for g, v in self._grads_and_vars]),
+            **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
+            **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
+            **influence_stats),
         }
 
     @override(TFPolicyGraph)

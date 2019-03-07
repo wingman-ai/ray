@@ -1163,6 +1163,17 @@ def start_raylet(redis_address,
     else:
         java_worker_command = ""
 
+    try:
+        import pydevd
+
+        pydevd_setup = pydevd.SetupHolder.setup
+
+        assert pydevd_setup['multiproc']
+        worker_path = f'{pydevd.__file__} --multiproc --qt-support={pydevd_setup["qt-support"]} ' \
+                      f'--client {pydevd_setup["client"]} --port {pydevd_setup["port"]} --file {worker_path}'
+    except ImportError:
+        pass
+
     # Create the command that the Raylet will use to start workers.
     start_worker_command = ("{} {} "
                             "--node-ip-address={} "

@@ -141,6 +141,52 @@ def run_experiments(experiments,
     if restore:
         runner = try_restore_runner(checkpoint_dir, search_alg, scheduler,
                                     trial_executor)
+
+        import collections, sys
+        import numpy as np
+
+        def tae_lp_override_check_model(restored_value, new_value):
+            restored_subnetwork_exists = not np.isclose(restored_value, 0)
+            new_subnetwork_exists = not (np.isscalar(new_value) and np.isclose(new_value, 0))
+
+            return restored_subnetwork_exists == new_subnetwork_exists
+
+        def override_flags(restored_config, new_config, flags_to_override):
+            for k, v in flags_to_override.items():
+                if isinstance(v, collections.Mapping):
+                    override_flags(restored_config[k], new_config[k], flags_to_override[k])
+                elif v is None or callable(v):
+                    if k in explicitly_defined_flags:
+                        assert v is None or v(restored_config[k], new_config[k]), "Restored and new model differ"
+                        restored_config[k] = new_config[k]
+                else:
+                    raise ValueError('Values of flags_to_override dict should be dict, None or methods')
+
+        restored_config = runner._trials[0].config
+        new_config = experiments[0].spec['config']
+        flags_to_override_to_model_check_dict = {
+            'grad_clip': None,
+            'lr': None,
+            'entropy_coeff': None,
+            'vf_loss_coeff': None,
+            'model': {
+                'custom_options': {
+                    'lp_coeff': tae_lp_override_check_model,
+                    'tae_coeff': tae_lp_override_check_model,
+                    'debug': None,
+                },
+            },
+        }
+
+        explicitly_defined_flags = set([arg[2:] for arg in sys.argv if arg.startswith('--')])
+        override_flags(restored_config, new_config, flags_to_override_to_model_check_dict)
+
+        if 'checkpoint_freq' in explicitly_defined_flags:
+            runner._trials[0].checkpoint_freq = experiments[0].spec['checkpoint_freq']
+
+        if runner._trials[0].status == Trial.ERROR:
+            runner._trials[0].init_logger()
+            runner._try_recover(runner._trials[0], error_msg=None)
     else:
         logger.info("Starting a new experiment.")
 
