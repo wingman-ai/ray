@@ -129,6 +129,7 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
         for key in self._last_stats_sum.keys():
             self._last_stats_sum[key] = 0
             self._last_stats_time[key] = time.time()
+
         return mean_stats
 
     @override(PolicyOptimizer)

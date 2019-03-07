@@ -155,11 +155,9 @@ class ModelCatalog(object):
 
         if isinstance(action_space, gym.spaces.Box):
             return tf.placeholder(
-                tf.as_dtype(action_space.dtype),
-                shape=(None, action_space.shape[0]), name="action")
+                tf.float32, shape=(None, action_space.shape[0]), name="action")
         elif isinstance(action_space, gym.spaces.Discrete):
-            return tf.placeholder(tf.as_dtype(action_space.dtype),
-                                  shape=(None, ), name="action")
+            return tf.placeholder(tf.int64, shape=(None, ), name="action")
         elif isinstance(action_space, gym.spaces.Tuple):
             size = 0
             all_discrete = True
@@ -212,39 +210,22 @@ class ModelCatalog(object):
 
         assert isinstance(input_dict, dict)
         options = options or MODEL_DEFAULTS
-        model = ModelCatalog._get_model(
-            input_dict,
-            obs_space,
-            action_space,
-            num_outputs,
-            options,
-            state_in,
-            seq_lens)
+        model = ModelCatalog._get_model(input_dict, obs_space, action_space,
+                                        num_outputs, options, state_in,
+                                        seq_lens)
 
         if options.get("use_lstm"):
             copy = dict(input_dict)
             copy["obs"] = model.last_layer
             feature_space = gym.spaces.Box(
                 -1, 1, shape=(model.last_layer.shape[1], ))
-            model = LSTM(
-                copy,
-                feature_space,
-                action_space,
-                num_outputs,
-                options,
-                state_in,
-                seq_lens)
+            model = LSTM(copy, feature_space, action_space, num_outputs,
+                         options, state_in, seq_lens)
 
         logger.debug(
             "Created model {}: ({} of {}, {}, {}, {}) -> {}, {}".format(
-                model,
-                input_dict,
-                obs_space,
-                action_space,
-                state_in,
-                seq_lens,
-                model.outputs,
-                model.state_out))
+                model, input_dict, obs_space, action_space, state_in, seq_lens,
+                model.outputs, model.state_out))
 
         model._validate_output_shape()
         return model
@@ -267,12 +248,8 @@ class ModelCatalog(object):
         obs_rank = len(input_dict["obs"].shape) - 1
 
         if obs_rank > 1:
-            return VisionNetwork(
-                input_dict,
-                obs_space,
-                action_space,
-                num_outputs,
-                options)
+            return VisionNetwork(input_dict, obs_space, action_space,
+                                 num_outputs, options)
 
         return FullyConnectedNetwork(input_dict, obs_space, action_space,
                                      num_outputs, options)

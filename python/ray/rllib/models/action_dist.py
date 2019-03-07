@@ -2,11 +2,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import distutils.version
 from collections import namedtuple
-
-import numpy as np
+import distutils.version
 import tensorflow as tf
+import numpy as np
+
 from ray.rllib.utils.annotations import override, DeveloperAPI
 
 use_tf150_api = (distutils.version.LooseVersion(tf.VERSION) >=

@@ -65,6 +65,7 @@ class VTraceLoss(object):
             bootstrap_value: A float32 tensor of shape [B].
             valid_mask: A bool tensor of valid RNN input elements (#2992).
         """
+
         # Compute vtrace on the CPU for better perf.
         with tf.device("/cpu:0"):
             self.vtrace_returns = vtrace.multi_from_logits(
