@@ -147,7 +147,8 @@ def run_experiments(experiments,
         runner = try_restore_runner(checkpoint_dir, search_alg, scheduler,
                                     trial_executor)
 
-        import collections, sys
+        import collections
+        import sys
         import numpy as np
 
         def tae_lp_override_check_model(restored_value, new_value):
@@ -163,7 +164,8 @@ def run_experiments(experiments,
                 elif v is None or callable(v):
                     if k in explicitly_defined_flags:
                         assert v is None or v(restored_config[k], new_config[k]), "Restored and new model differ"
-                        restored_config[k] = new_config[k]
+                        if any(isinstance(new_config[k], cls) for cls in [int, float, bool, str]):
+                            restored_config[k] = new_config[k]
                 else:
                     raise ValueError('Values of flags_to_override dict should be dict, None or methods')
 
