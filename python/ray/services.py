@@ -1098,9 +1098,10 @@ def start_raylet(redis_address,
 
         pydevd_setup = pydevd.SetupHolder.setup
 
-        assert pydevd_setup['multiproc']
-        worker_path = f'{pydevd.__file__} --multiproc --qt-support={pydevd_setup["qt-support"]} ' \
-                      f'--client {pydevd_setup["client"]} --port {pydevd_setup["port"]} --file {worker_path}'
+        if pydevd_setup is not None:
+            assert pydevd_setup['multiproc']
+            worker_path = f'{pydevd.__file__} --multiproc --qt-support={pydevd_setup["qt-support"]} ' \
+                          f'--client {pydevd_setup["client"]} --port {pydevd_setup["port"]} --file {worker_path}'
     except ImportError:
         pass
 
