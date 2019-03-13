@@ -7,14 +7,14 @@ from __future__ import division
 from __future__ import print_function
 
 import gym
-import ray
 import numpy as np
+import ray
 import tensorflow as tf
 from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.policy_graph import PolicyGraph
 from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph, \
     LearningRateSchedule
-from ray.rllib.models.action_dist import Categorical, MultiCategorical
+from ray.rllib.models.action_dist import MultiCategorical, Categorical
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.error import UnsupportedSpaceException
