@@ -6,12 +6,17 @@ echo 10
 EOF
 chmod +x /usr/bin/nproc
 
-export RAY_USE_CMAKE=1
 
 PYTHONS=("cp36-cp36m")
 
 # On python 3.7, a newer version of numpy seems to be necessary.
 NUMPY_VERSIONS=("1.10.4")
+
+sudo apt-get install unzip
+/ray/ci/travis/install-bazel.sh
+
+# Put bazel into the PATH
+export PATH=$PATH:/root/bin
 
 # Remove this old Python 2.4.3 executable, and make the "python2" command find
 # a newer version of Python. We need this for autogenerating some files for the
