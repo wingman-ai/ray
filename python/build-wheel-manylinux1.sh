@@ -6,16 +6,11 @@ echo 10
 EOF
 chmod +x /usr/bin/nproc
 
-PYTHONS=("cp27-cp27mu"
-         "cp35-cp35m"
-         "cp36-cp36m"
-         "cp37-cp37m")
+
+PYTHONS=("cp36-cp36m")
 
 # On python 3.7, a newer version of numpy seems to be necessary.
-NUMPY_VERSIONS=("1.10.4"
-                "1.10.4"
-                "1.10.4"
-                "1.14.5")
+NUMPY_VERSIONS=("1.10.4")
 
 sudo apt-get install unzip
 /ray/ci/travis/install-bazel.sh
