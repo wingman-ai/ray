@@ -294,6 +294,8 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
             self,
             observation_space,
             action_space,
+            config,
+            logit_dim,
             self.sess,
             obs_input=observations,
             action_sampler=action_dist.sample(),
@@ -355,6 +357,7 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
                 "vtrace_vs_mean": vtrace_vs_mean,
             },
             **self.KL_stats,
+            **self.stats_fetches["stats"],
             **dict([(v.name + '_mean', tf.reduce_mean(g)) for g, v in self._grads_and_vars]),
             **dict([(v.name + '_min', tf.reduce_min(g)) for g, v in self._grads_and_vars]),
             **dict([(v.name + '_max', tf.reduce_max(g)) for g, v in self._grads_and_vars]),
@@ -397,11 +400,12 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
     def extra_compute_grad_fetches(self):
         return self.stats_fetches
 
-    @override(PolicyGraph)
+    @override(TFPolicyGraph)
     def postprocess_trajectory(self,
                                sample_batch,
                                other_agent_batches=None,
                                episode=None):
+        TFPolicyGraph.postprocess_trajectory(self, sample_batch)
         del sample_batch.data["new_obs"]  # not used, so save some bandwidth
         return sample_batch
 
