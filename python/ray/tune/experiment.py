@@ -73,6 +73,10 @@ class Experiment(object):
             checkpoints. A value of 0 (default) disables checkpointing.
         checkpoint_at_end (bool): Whether to checkpoint at the end of the
             experiment regardless of the checkpoint_freq. Default is False.
+        keep_checkpoints_num (int) : Number of last checkpoints to keep. Others get
+             deleted. Default is None - keeps all checkpoints.
+        keep_best_checkpoints_num (int): Number of highest reward checkpoints to keep.
+            Default value of None disables it.
         export_formats (list): List of formats that exported at the end of
             the experiment. Default is None.
         max_failures (int): Try to recover a trial from its last
@@ -125,6 +129,8 @@ class Experiment(object):
                  sync_function=None,
                  checkpoint_freq=0,
                  checkpoint_at_end=False,
+                 keep_best_checkpoints_num=None,
+                 keep_checkpoints_num=None,
                  export_formats=None,
                  max_failures=3,
                  restore=None,
@@ -155,6 +161,8 @@ class Experiment(object):
             "sync_function": sync_function,
             "checkpoint_freq": checkpoint_freq,
             "checkpoint_at_end": checkpoint_at_end,
+            "keep_best_checkpoints_num": keep_best_checkpoints_num,
+            "keep_checkpoints_num": keep_checkpoints_num,
             "export_formats": export_formats or [],
             "max_failures": max_failures,
             "restore": restore
