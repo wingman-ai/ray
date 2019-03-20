@@ -141,9 +141,8 @@ COMMON_CONFIG = {
     # remote processes instead of in the same worker. This adds overheads, but
     # can make sense if your envs are very CPU intensive (e.g., for StarCraft).
     "remote_worker_envs": False,
-    # Similar to remote_worker_envs, but runs the envs asynchronously in the
-    # background for greater efficiency. Conflicts with remote_worker_envs.
-    "async_remote_worker_envs": False,
+    # Timeout that remote workers are waiting when polling environments
+    "remote_worker_env_timeout_ms": 0,
 
     # === Offline Datasets ===
     # __sphinx_doc_input_begin__
@@ -503,7 +502,8 @@ class Agent(Trainable):
                         "tf_session_args": self.
                         config["local_evaluator_tf_session_args"]
                     }),
-                extra_config or {}))
+                extra_config or {}),
+            0)
 
     @DeveloperAPI
     def make_remote_evaluators(self, env_creator, policy_graph, count):
@@ -516,10 +516,11 @@ class Agent(Trainable):
         }
 
         cls = PolicyEvaluator.as_remote(**remote_args).remote
+        num_envs = self.config["num_envs_per_worker"]
 
         return [
             self._make_evaluator(cls, env_creator, policy_graph, i + 1,
-                                 self.config) for i in range(count)
+                                 self.config, num_envs) for i in range(count)
         ]
 
     @DeveloperAPI
@@ -629,7 +630,7 @@ class Agent(Trainable):
             self.optimizer, PolicyOptimizer)
 
     def _make_evaluator(self, cls, env_creator, policy_graph, worker_index,
-                        config):
+                        config, num_envs):
         def session_creator():
             logger.debug("Creating TF session {}".format(
                 config["tf_session_args"]))
@@ -684,7 +685,7 @@ class Agent(Trainable):
             preprocessor_pref=config["preprocessor_pref"],
             sample_async=config["sample_async"],
             compress_observations=config["compress_observations"],
-            num_envs=config["num_envs_per_worker"],
+            num_envs=num_envs,
             observation_filter=config["observation_filter"],
             clip_rewards=config["clip_rewards"],
             clip_actions=config["clip_actions"],
@@ -700,7 +701,7 @@ class Agent(Trainable):
             input_evaluation=input_evaluation,
             output_creator=output_creator,
             remote_worker_envs=config["remote_worker_envs"],
-            async_remote_worker_envs=config["async_remote_worker_envs"])
+            remote_worker_env_timeout_ms=config["remote_worker_env_timeout_ms"])
 
     @override(Trainable)
     def _export_model(self, export_formats, export_dir):
