@@ -142,8 +142,8 @@ class TFPolicyGraph(PolicyGraph):
 
         if self._config["rnd"]:
             # initialize RND
-            self._rnd = RND(self._obs_input, self._is_training, self.observation_space, self._logit_dim,
-                            self._config["model"], self._sess)
+            self._rnd = RND(self._obs_input, self._is_training, self.observation_space, self.action_space,
+                            self._logit_dim, self._config["model"], self._sess)
             self._loss += self._rnd.loss
 
         # gather update ops for any batch norm layers
