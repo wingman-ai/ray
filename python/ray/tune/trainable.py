@@ -205,6 +205,31 @@ class Trainable(object):
 
         return result
 
+    def save_checkpoint_relative(self, relative_dir):
+        """Saves checkpoints relative to logdir folder.
+
+        Parameters
+        ----------
+            relative_dir : path of subdirectory to save to
+
+        Returns
+        -------
+            checkpoint_path, checkpoint_folder_path
+
+        """
+        folder_path = os.path.join(self.logdir, relative_dir)
+        return self.save(folder_path), os.path.join(folder_path, "checkpoint_{}".format(self._iteration))
+
+    def delete_checkpoint(self, checkpoint_dir):
+        """Removes subdirectory within checkpoint_folder
+
+        Parameters
+        ----------
+            checkpoint_dir : path to checkpoint
+
+        """
+        shutil.rmtree(checkpoint_dir)
+
     def save(self, checkpoint_dir=None):
         """Saves the current model state to a checkpoint.
 
@@ -445,13 +470,3 @@ class Trainable(object):
             A dict that maps ExportFormats to successfully exported models.
         """
         return {}
-
-
-def wrap_function(train_func):
-    from ray.tune.function_runner import FunctionRunner
-
-    class WrappedFunc(FunctionRunner):
-        def _trainable_func(self):
-            return train_func
-
-    return WrappedFunc

@@ -18,12 +18,9 @@ class RemoteVectorEnv(BaseEnv):
     are supported, and envs can be stepped synchronously or async.
     """
 
-    def __init__(self, make_env, num_envs, multiagent, sync):
+    def __init__(self, make_env, num_envs, multiagent, remote_worker_env_timeout_ms):
         self.make_local_env = make_env
-        if sync:
-            self.timeout = 9999999.0  # wait for all envs
-        else:
-            self.timeout = 0.0  # wait for only ready envs
+        self.timeout = remote_worker_env_timeout_ms / 1000
 
         def make_remote_env(i):
             logger.info("Launching env {} in remote actor".format(i))
@@ -75,6 +72,10 @@ class RemoteVectorEnv(BaseEnv):
         obs, _, _, _ = ray.get(self.actors[env_id].reset.remote())
         return obs
 
+    def send_reset(self, env_id):
+        actor = self.actors[env_id]
+        obj_id = actor.reset.remote()
+        self.pending[obj_id] = actor
 
 @ray.remote(num_cpus=0)
 class _RemoteMultiAgentEnv(object):

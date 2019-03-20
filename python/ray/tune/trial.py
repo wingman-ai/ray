@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import math
 from collections import namedtuple
 import ray.cloudpickle as cloudpickle
 import copy
@@ -253,6 +254,8 @@ class Trial(object):
                  stopping_criterion=None,
                  checkpoint_freq=0,
                  checkpoint_at_end=False,
+                 keep_best_checkpoints_num=None,
+                 keep_checkpoints_num=None,
                  export_formats=None,
                  restore_path=None,
                  upload_dir=None,
@@ -288,6 +291,8 @@ class Trial(object):
         self.last_update_time = -float("inf")
         self.checkpoint_freq = checkpoint_freq
         self.checkpoint_at_end = checkpoint_at_end
+        self.keep_best_checkpoints_num = keep_best_checkpoints_num
+        self.keep_checkpoints_num = keep_checkpoints_num
         self._checkpoint = Checkpoint(
             storage=Checkpoint.DISK, value=restore_path)
         self.export_formats = export_formats
@@ -301,6 +306,20 @@ class Trial(object):
         self.num_failures = 0
 
         self.custom_trial_name = None
+        self.results_since_checkpoint_sum = 0
+        self.results_since_checkpoint_cnt = 0
+
+        self.best_checkpoint_reward = float("-inf")
+        self.prefix = {
+            "best": {
+                "history": [],
+                "limit": keep_best_checkpoints_num
+            },
+            "": {
+                "history": [],
+                "limit": keep_checkpoints_num
+            }
+        }
 
         # AutoML fields
         self.results = None
@@ -496,6 +515,14 @@ class Trial(object):
         self.last_result = result
         self.last_update_time = time.time()
         self.result_logger.on_result(self.last_result)
+
+        try:
+            if not math.isnan(result["episode_reward_mean"]):
+                self.results_since_checkpoint_sum += result["episode_reward_mean"]
+                self.results_since_checkpoint_cnt += 1
+        except KeyError as e:
+            raise KeyError("Warning: result has no key episde_reward_mean. Keep_best_checkpoint flag will not work.")
+
 
     def _get_trainable_cls(self):
         return ray.tune.registry._global_registry.get(
