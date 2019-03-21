@@ -139,9 +139,13 @@ COMMON_CONFIG = {
     "collect_metrics_timeout": 180,
     # If using num_envs_per_worker > 1, whether to create those new envs in
     # remote processes instead of in the same worker. This adds overheads, but
-    # can make sense if your envs are very CPU intensive (e.g., for StarCraft).
+    # can make sense if your envs can take much time to step / reset
+    # (e.g., for StarCraft)
     "remote_worker_envs": False,
-    # Timeout that remote workers are waiting when polling environments
+    # Timeout that remote workers are waiting when polling environments.
+    # 0 (continue when at least one env is ready) is a reasonable default,
+    # but optimal value could be obtained by measuring your environment
+    # step / reset and model inference perf.
     "remote_worker_env_timeout_ms": 0,
 
     # === Offline Datasets ===
@@ -373,10 +377,17 @@ class Agent(Trainable):
 
     @override(Trainable)
     def _stop(self):
+        # Call stop on all evaluators to release resources
+        if hasattr(self, "local_evaluator"):
+            self.local_evaluator.stop()
+        if hasattr(self, "remote_evaluators"):
+            ray.get([ev.stop.remote() for ev in self.remote_evaluators])
+
         # workaround for https://github.com/ray-project/ray/issues/1516
         if hasattr(self, "remote_evaluators"):
             for ev in self.remote_evaluators:
                 ev.__ray_terminate__.remote()
+
         if hasattr(self, "optimizer"):
             self.optimizer.stop()
 
@@ -502,8 +513,7 @@ class Agent(Trainable):
                         "tf_session_args": self.
                         config["local_evaluator_tf_session_args"]
                     }),
-                extra_config or {}),
-            0)
+                extra_config or {}))
 
     @DeveloperAPI
     def make_remote_evaluators(self, env_creator, policy_graph, count):
@@ -516,11 +526,10 @@ class Agent(Trainable):
         }
 
         cls = PolicyEvaluator.as_remote(**remote_args).remote
-        num_envs = self.config["num_envs_per_worker"]
 
         return [
             self._make_evaluator(cls, env_creator, policy_graph, i + 1,
-                                 self.config, num_envs) for i in range(count)
+                                 self.config) for i in range(count)
         ]
 
     @DeveloperAPI
@@ -630,7 +639,7 @@ class Agent(Trainable):
             self.optimizer, PolicyOptimizer)
 
     def _make_evaluator(self, cls, env_creator, policy_graph, worker_index,
-                        config, num_envs):
+                        config):
         def session_creator():
             logger.debug("Creating TF session {}".format(
                 config["tf_session_args"]))
@@ -685,7 +694,7 @@ class Agent(Trainable):
             preprocessor_pref=config["preprocessor_pref"],
             sample_async=config["sample_async"],
             compress_observations=config["compress_observations"],
-            num_envs=num_envs,
+            num_envs=config["num_envs_per_worker"],
             observation_filter=config["observation_filter"],
             clip_rewards=config["clip_rewards"],
             clip_actions=config["clip_actions"],
