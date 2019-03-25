@@ -317,6 +317,8 @@ class TFPolicyGraph(PolicyGraph):
                                           "rewards"] * 1.0  # TODO: @Vishal figure out what exactly is going on here and a cleaner way to handle it
             sample_batch["rewards"] += bonus
 
+            print(np.min(sample_batch['rewards'] - bonus), np.max(sample_batch['rewards'] - bonus), np.min(bonus), np.max(bonus))
+
     @DeveloperAPI
     def _get_is_training_placeholder(self):
         """Get the placeholder for _is_training, i.e., for batch norm layers.

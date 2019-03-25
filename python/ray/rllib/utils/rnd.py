@@ -16,6 +16,57 @@ from mpi4py import MPI
 
 logger = logging.getLogger(__name__)
 
+def to2d(x):
+    size = 1
+    for shapel in x.get_shape()[1:]: size *= shapel.value
+    return tf.reshape(x, (-1, size))
+
+def ortho_init(scale=1.0):
+    def _ortho_init(shape, dtype, partition_info=None):
+        #lasagne ortho init for tf
+        shape = tuple(shape)
+        if len(shape) == 2:
+            flat_shape = shape
+        elif len(shape) == 4: # assumes NHWC
+            flat_shape = (np.prod(shape[:-1]), shape[-1])
+        else:
+            raise NotImplementedError
+        a = np.random.normal(0.0, 1.0, flat_shape)
+        u, _, v = np.linalg.svd(a, full_matrices=False)
+        q = u if u.shape == flat_shape else v # pick the one with the correct shape
+        q = q.reshape(shape)
+        return (scale * q[:shape[0], :shape[1]]).astype(np.float32)
+    return _ortho_init
+
+
+def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
+    with tf.variable_scope(scope):
+        nin = x.get_shape()[1].value
+        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
+        return tf.matmul(x, w)+b
+
+def conv(x, scope, *, nf, rf, stride, pad='VALID', init_scale=1.0, data_format='NHWC', one_dim_bias=False):
+    if data_format == 'NHWC':
+        channel_ax = 3
+        strides = [1, stride, stride, 1]
+        bshape = [1, 1, 1, nf]
+    elif data_format == 'NCHW':
+        channel_ax = 1
+        strides = [1, 1, stride, stride]
+        bshape = [1, nf, 1, 1]
+    else:
+        raise NotImplementedError
+    bias_var_shape = [nf] if one_dim_bias else [1, nf, 1, 1]
+    nin = x.get_shape()[channel_ax].value
+    wshape = [rf, rf, nin, nf]
+    with tf.variable_scope(scope):
+        w = tf.get_variable("w", wshape, initializer=ortho_init(init_scale))
+        b = tf.get_variable("b", bias_var_shape, initializer=tf.constant_initializer(0.0))
+        if not one_dim_bias and data_format == 'NHWC':
+            b = tf.reshape(b, bshape)
+        return b + tf.nn.conv2d(x, w, strides=strides, padding=pad, data_format=data_format)
+
 class RND(object):
     def __init__(self, obs_ph, is_training_ph, obs_space, action_space, logit_dim, model_cfg, sess, rnd_predictor_update_proportion=1.0):
         # set proportion of bonuses to actually use
@@ -32,33 +83,54 @@ class RND(object):
 #        obs_ph = tf.layers.batch_normalization(obs_ph, training=is_training_ph)
 
         # clip obs to [-5.0, 5.0]
-#        obs_ph = tf.clip_by_value(obs_ph, -5.0, 5.0)
+        #obs_ph = tf.clip_by_value(obs_ph, -5.0, 5.0)
+
+        convfeat = 32
+        enlargement = 2
+        rep_size = 512
+
+        # self.ph_mean = tf.placeholder(dtype=tf.float32, shape=list(obs_ph.shape[:2])+[1], name="obmean")
+        # self.ph_std = tf.placeholder(dtype=tf.float32, shape=list(obs_ph.shape[:2])+[1], name="obstd")
+        self.ph_mean = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 106
+        self.ph_std = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 46
+
+
 
         # build target and predictor networks
         logger.info("Building RND networks...")
         with tf.variable_scope("rnd"):
             with tf.variable_scope("target"):
-                self._targets = ModelCatalog.get_model(
-                    input_dict={
-                        "obs": obs_ph,
-                        "is_training": is_training_ph,
-                    },
-                    obs_space=obs_space,
-                    action_space=action_space,
-                    num_outputs=logit_dim,
-                    options=model_cfg).outputs
+
+                xr = obs_ph
+                xr = tf.cast(xr, tf.float32)
+                xr = xr[:, :, :, -1:]
+                xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
+
+                xr = tf.nn.leaky_relu(conv(xr, 'c1r', nf=convfeat * 1, rf=8, stride=4, init_scale=np.sqrt(2)))
+                xr = tf.nn.leaky_relu(conv(xr, 'c2r', nf=convfeat * 2 * 1, rf=4, stride=2, init_scale=np.sqrt(2)))
+                xr = tf.nn.leaky_relu(conv(xr, 'c3r', nf=convfeat * 2 * 1, rf=3, stride=1, init_scale=np.sqrt(2)))
+                rgbr = [to2d(xr)]
+
+                self._targets = fc(rgbr[0], 'fc1r', nh=rep_size, init_scale=np.sqrt(2))
+
+
             self._targets = tf.stop_gradient(self._targets) # freeze target network
 
             with tf.variable_scope("predictor"):
-                self._preds = ModelCatalog.get_model(
-                    {
-                        "obs": obs_ph,
-                        "is_training": is_training_ph,
-                    },
-                    obs_space,
-                    action_space,
-                    logit_dim,
-                    model_cfg).outputs
+                xr = obs_ph
+                xr = tf.cast(xr, tf.float32)
+                xr = xr[:, :, :, -1:]
+                xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
+
+                xrp = tf.nn.leaky_relu(conv(xr, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=3, stride=1, init_scale=np.sqrt(2)))
+                rgbrp = to2d(xrp)
+                # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                X_r_hat = tf.nn.relu(fc(X_r_hat, 'fc1r_hat2_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                self._preds  = fc(X_r_hat, 'fc1r_hat3_pred', nh=rep_size, init_scale=np.sqrt(2))
+
 
         # build intr reward (bonus)
         self._intr_rew = self._build_intr_reward()
@@ -82,18 +154,40 @@ class RND(object):
         return intr_rew
 
     def compute_intr_rew(self, obs):
+        # max = np.amax(obs)
+        # min = np.amin(obs)
+        # avg = np.average(obs)
+        # print([max, min, avg])
+
+        # out_one  1 50  sample_batch_size 50
+        # rews_int 1 50
+
         feed_dict = {self._obs_ph: obs, self._is_training_ph: False}
         out_one = self._sess.run(self._intr_rew, feed_dict=feed_dict)
-        out_one = out_one.T
+        out_one = out_one.T   #  zapazanje  ovdje su puno manji brojevi u RND radu npr min 0.646 max 0.951  a u radu min 0.046 max 0.235
         rffs_int = np.array([self.rff_int.update(rew) for rew in out_one.T])
         self.rff_rms_int.update(rffs_int.ravel())
         rews_int = out_one / np.sqrt(self.rff_rms_int.var)
+
+
 
         return np.squeeze(rews_int)
 
     def _build_loss(self):
         logger.info('Building RND loss...')
+
+
+        # self._preds = tf.Print(self._preds, [self._preds[0], self._targets[0]], message="Preds", summarize=999999)
+
+        print_op = tf.print(self._preds[0], self._targets[0])
+        with tf.control_dependencies([self._preds, self._targets]):
+            with tf.control_dependencies([print_op]):
+                self._preds = tf.identity(self._preds)
+                self._targets = tf.identity(self._targets)
+
         loss = tf.reduce_mean(tf.square(self._preds - self._targets), axis=-1)
+
+
         keep_mask = tf.random_uniform(shape=tf.shape(loss), minval=0.0, maxval=1.0, dtype=tf.float32)
         keep_mask = tf.cast(keep_mask < self._rnd_predictor_update_proportion, tf.float32)
         loss = tf.reduce_sum(loss * keep_mask) / tf.maximum(tf.reduce_sum(keep_mask), 1.0)
@@ -135,7 +229,8 @@ class RewardForwardFilter(object):
             self.rewems = rews
         else:
             self.rewems = self.rewems * self.gamma + rews
-        return self.rewems
+        print('rewems', self.rewems)
+        return self.rewems  # shape 1,
 
 
 
