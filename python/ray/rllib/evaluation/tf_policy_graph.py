@@ -132,6 +132,15 @@ class TFPolicyGraph(PolicyGraph):
             self._loss = loss
             self._stats_fetches = {}
 
+        if self._config["rnd"]:
+            # initialize RND
+            self._rnd = RND(self._obs_input, self._is_training, self.observation_space, self.action_space,
+                            self._logit_dim, self._config["model"], self._sess)
+            self._loss += self._rnd.loss
+
+            self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                              tf.get_variable_scope().name)
+
         self._optimizer = self.optimizer()
         self._grads_and_vars = [(g, v)
                                 for (g, v) in self.gradients(self._optimizer)
@@ -139,12 +148,6 @@ class TFPolicyGraph(PolicyGraph):
         self._grads = [g for (g, v) in self._grads_and_vars]
         self._variables = ray.experimental.tf_utils.TensorFlowVariables(
             self._loss, self._sess)
-
-        if self._config["rnd"]:
-            # initialize RND
-            self._rnd = RND(self._obs_input, self._is_training, self.observation_space, self.action_space,
-                            self._logit_dim, self._config["model"], self._sess)
-            self._loss += self._rnd.loss
 
         # gather update ops for any batch norm layers
         if update_ops:
@@ -501,7 +504,7 @@ class LearningRateSchedule(object):
 
     @DeveloperAPI
     def __init__(self, lr, lr_schedule):
-        self.cur_lr = tf.get_variable("lr", initializer=lr)
+        self.cur_lr = tf.get_variable("lr", initializer=lr, trainable=False)
         if lr_schedule is None:
             self.lr_schedule = ConstantSchedule(lr)
         else:

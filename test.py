@@ -8,11 +8,11 @@ agent = ImpalaAgent(config={
     'num_envs_per_worker': 3,
     'num_gpus': 1,
     'rnd': 1,
-    'vf_loss_coeff': 0.5,
-    'entropy_coeff': 0.2,
+    # 'vf_loss_coeff': 0.5,
+    # 'entropy_coeff': 0.2,
     # 'lr': 0.0003,
     'model': {'dim': 42},
-    'sample_batch_size': 5,
+    'sample_batch_size': 30,
 }, env='PongNoFrameskip-v4')
 
 while True:

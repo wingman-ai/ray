@@ -125,6 +125,7 @@ class RND(object):
                 xrp = tf.nn.leaky_relu(conv(xr, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=3, stride=1, init_scale=np.sqrt(2)))
+                xrp = tf.Print(xrp, [xrp], "l:   ")
                 rgbrp = to2d(xrp)
                 # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
                 X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
@@ -154,10 +155,19 @@ class RND(object):
         return intr_rew
 
     def compute_intr_rew(self, obs):
+        # obs shape 30 42 42 4
+
         # max = np.amax(obs)
         # min = np.amin(obs)
         # avg = np.average(obs)
         # print([max, min, avg])
+
+        #l1 = tf.get_variable('c1rp_pred');
+
+        #tf.print(l1)
+
+        # obs = np.ones(shape=obs.shape)
+
 
         # out_one  1 50  sample_batch_size 50
         # rews_int 1 50
@@ -229,7 +239,7 @@ class RewardForwardFilter(object):
             self.rewems = rews
         else:
             self.rewems = self.rewems * self.gamma + rews
-        print('rewems', self.rewems)
+        #print('rewems', self.rewems)
         return self.rewems  # shape 1,
 
 
