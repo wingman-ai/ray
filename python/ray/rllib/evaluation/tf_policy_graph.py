@@ -310,17 +310,11 @@ class TFPolicyGraph(PolicyGraph):
         if self._config["rnd"]:
             # add rnd bonus
             bonus = self._rnd.compute_intr_rew(sample_batch["obs"])
-            #            print("POSTPROCESSING!!")
-            #            print(sample_batch["obs"])
-            #            import IPython
-            #            IPython.embed()
-            #            print(bonus)
-            #            print(sample_batch["rewards"])
+
             sample_batch["rewards"] = sample_batch[
-                                          "rewards"] * 1.0  # TODO: @Vishal figure out what exactly is going on here and a cleaner way to handle it
+                                          "rewards"] * 1.0
             sample_batch["rewards"] += bonus
 
-            #print(np.min(sample_batch['rewards'] - bonus), np.max(sample_batch['rewards'] - bonus), np.min(bonus), np.max(bonus))
 
     @DeveloperAPI
     def _get_is_training_placeholder(self):

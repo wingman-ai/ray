@@ -79,22 +79,12 @@ class RND(object):
         self._obs_ph = obs_ph
         self._is_training_ph = is_training_ph
 
-        # normalize obs
-#        obs_ph = tf.layers.batch_normalization(obs_ph, training=is_training_ph)
-
-        # clip obs to [-5.0, 5.0]
-        #obs_ph = tf.clip_by_value(obs_ph, -5.0, 5.0)
-
         convfeat = 32
         enlargement = 2
         rep_size = 512
 
-        # self.ph_mean = tf.placeholder(dtype=tf.float32, shape=list(obs_ph.shape[:2])+[1], name="obmean")
-        # self.ph_std = tf.placeholder(dtype=tf.float32, shape=list(obs_ph.shape[:2])+[1], name="obstd")
         self.ph_mean = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 106
         self.ph_std = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 46
-
-
 
         # build target and predictor networks
         logger.info("Building RND networks...")
@@ -125,9 +115,8 @@ class RND(object):
                 xrp = tf.nn.leaky_relu(conv(xr, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=3, stride=1, init_scale=np.sqrt(2)))
-                #xrp = tf.Print(xrp, [xrp], "l:   ")
                 rgbrp = to2d(xrp)
-                # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
+
                 X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
                 X_r_hat = tf.nn.relu(fc(X_r_hat, 'fc1r_hat2_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
                 self._preds  = fc(X_r_hat, 'fc1r_hat3_pred', nh=rep_size, init_scale=np.sqrt(2))
@@ -150,34 +139,14 @@ class RND(object):
     def _build_intr_reward(self):
         logger.info('Building RND intrinisic reward...')
         intr_rew = tf.reduce_mean(tf.square(self._preds - self._targets), axis=-1, keep_dims=True)
-        # normalize intr reward
-#        intr_rew = tf.layers.batch_normalization(intr_rew, training=self._is_training_ph)
+
         return intr_rew
 
     def compute_intr_rew(self, obs):
-        # obs shape 30 42 42 4
-
-        # max = np.amax(obs)
-        # min = np.amin(obs)
-        # avg = np.average(obs)
-        # print([max, min, avg])
-
-        #l1 = tf.get_variable('c1rp_pred');
-
-        #tf.print(l1)
-
-        # obs = np.ones(shape=obs.shape)
-
-
-        # out_one  1 50  sample_batch_size 50
-        # rews_int 1 50
-
-        feed_dict = {self._obs_ph: obs, self._is_training_ph: False}
-        out_one = self._sess.run(self._intr_rew, feed_dict=feed_dict)
-        out_one = out_one.T   #  zapazanje  ovdje su puno manji brojevi u RND radu npr min 0.646 max 0.951  a u radu min 0.046 max 0.235
-        rffs_int = np.array([self.rff_int.update(rew) for rew in out_one.T])
+        sess_obs = self._sess.run(self._intr_rew, feed_dict={self._obs_ph: obs, self._is_training_ph: False}).T
+        rffs_int = np.array([self.rff_int.update(rew) for rew in sess_obs.T])
         self.rff_rms_int.update(rffs_int.ravel())
-        rews_int = out_one / np.sqrt(self.rff_rms_int.var)
+        rews_int = sess_obs / np.sqrt(self.rff_rms_int.var)
 
 
 
@@ -185,19 +154,7 @@ class RND(object):
 
     def _build_loss(self):
         logger.info('Building RND loss...')
-
-
-        # self._preds = tf.Print(self._preds, [self._preds[0], self._targets[0]], message="Preds", summarize=999999)
-
-        #print_op = tf.print(self._preds[0], self._targets[0])
-        # with tf.control_dependencies([self._preds, self._targets]):
-        #     with tf.control_dependencies([print_op]):
-        #         self._preds = tf.identity(self._preds)
-        #         self._targets = tf.identity(self._targets)
-
         loss = tf.reduce_mean(tf.square(self._preds - self._targets), axis=-1)
-
-
         keep_mask = tf.random_uniform(shape=tf.shape(loss), minval=0.0, maxval=1.0, dtype=tf.float32)
         keep_mask = tf.cast(keep_mask < self._rnd_predictor_update_proportion, tf.float32)
         loss = tf.reduce_sum(loss * keep_mask) / tf.maximum(tf.reduce_sum(keep_mask), 1.0)
@@ -239,13 +196,11 @@ class RewardForwardFilter(object):
             self.rewems = rews
         else:
             self.rewems = self.rewems * self.gamma + rews
-        #print('rewems', self.rewems)
         return self.rewems  # shape 1,
 
 
 
 class RunningMeanStd(object):
-    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     def __init__(self, epsilon=1e-4, shape=(), comm=None, use_mpi=True):
         self.mean = np.zeros(shape, 'float64')
         self.use_mpi = use_mpi
