@@ -125,7 +125,7 @@ class RND(object):
                 xrp = tf.nn.leaky_relu(conv(xr, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=3, stride=1, init_scale=np.sqrt(2)))
-                xrp = tf.Print(xrp, [xrp], "l:   ")
+                #xrp = tf.Print(xrp, [xrp], "l:   ")
                 rgbrp = to2d(xrp)
                 # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
                 X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
@@ -189,11 +189,11 @@ class RND(object):
 
         # self._preds = tf.Print(self._preds, [self._preds[0], self._targets[0]], message="Preds", summarize=999999)
 
-        print_op = tf.print(self._preds[0], self._targets[0])
-        with tf.control_dependencies([self._preds, self._targets]):
-            with tf.control_dependencies([print_op]):
-                self._preds = tf.identity(self._preds)
-                self._targets = tf.identity(self._targets)
+        #print_op = tf.print(self._preds[0], self._targets[0])
+        # with tf.control_dependencies([self._preds, self._targets]):
+        #     with tf.control_dependencies([print_op]):
+        #         self._preds = tf.identity(self._preds)
+        #         self._targets = tf.identity(self._targets)
 
         loss = tf.reduce_mean(tf.square(self._preds - self._targets), axis=-1)
 
