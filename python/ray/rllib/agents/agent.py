@@ -17,7 +17,8 @@ from ray.exceptions import RayError
 from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
     ShuffledInput
 from ray.rllib.models import MODEL_DEFAULTS
-from ray.rllib.evaluation.policy_evaluator import PolicyEvaluator
+from ray.rllib.evaluation.policy_evaluator import PolicyEvaluator, \
+    _validate_multiagent_config
 from ray.rllib.evaluation.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
 from ray.rllib.utils.annotations import override, PublicAPI, DeveloperAPI
@@ -40,7 +41,10 @@ COMMON_CONFIG = {
     # === Debugging ===
     # Whether to write episode stats and videos to the agent log dir
     "monitor": False,
-    # Set the ray.rllib.* log level for the agent process and its evaluators
+    # Set the ray.rllib.* log level for the agent process and its evaluators.
+    # Should be one of DEBUG, INFO, WARN, or ERROR. The DEBUG level will also
+    # periodically print out summaries of relevant internal dataflow (this is
+    # also printed out once at startup at the INFO level).
     "log_level": "INFO",
     # Callbacks that will be run during various phases of training. These all
     # take a single "info" dict as an argument. For episode callbacks, custom
@@ -99,7 +103,9 @@ COMMON_CONFIG = {
     # === Execution ===
     # Number of environments to evaluate vectorwise per worker.
     "num_envs_per_worker": 1,
-    # Default sample batch size
+    # Default sample batch size (unroll length). Batches of this size are
+    # collected from workers until train_batch_size is met. When using
+    # multiple envs per worker, this is multiplied by num_envs_per_worker.
     "sample_batch_size": 200,
     # Training batch size, if applicable. Should be >= sample_batch_size.
     # Samples batches will be concatenated together to this size for training.
@@ -137,15 +143,20 @@ COMMON_CONFIG = {
     "compress_observations": False,
     # Drop metric batches from unresponsive workers after this many seconds
     "collect_metrics_timeout": 180,
+    # Smooth metrics over this many episodes.
+    "metrics_smoothing_episodes": 100,
     # If using num_envs_per_worker > 1, whether to create those new envs in
     # remote processes instead of in the same worker. This adds overheads, but
-    # can make sense if your envs are very CPU intensive (e.g., for StarCraft).
+    # can make sense if your envs can take much time to step / reset
+    # (e.g., for StarCraft)
     "remote_worker_envs": False,
-    # Timeout that remote workers are waiting when polling environments
+    # Timeout that remote workers are waiting when polling environments.
+    # 0 (continue when at least one env is ready) is a reasonable default,
+    # but optimal value could be obtained by measuring your environment
+    # step / reset and model inference perf.
     "remote_worker_env_timeout_ms": 0,
 
     # === Offline Datasets ===
-    # __sphinx_doc_input_begin__
     # Specify how to generate experiences:
     #  - "sampler": generate experiences via online simulation (default)
     #  - a local directory or file glob expression (e.g., "/tmp/*.json")
@@ -171,8 +182,6 @@ COMMON_CONFIG = {
     # of this number of batches. Use this if the input data is not in random
     # enough order. Input is delayed until the shuffle buffer is filled.
     "shuffle_buffer_size": 0,
-    # __sphinx_doc_input_end__
-    # __sphinx_doc_output_begin__
     # Specify where experiences should be saved:
     #  - None: don't save any experiences
     #  - "logdir" to save to the agent log dir
@@ -183,7 +192,6 @@ COMMON_CONFIG = {
     "output_compress_columns": ["obs", "new_obs"],
     # Max output file size before rolling over to a new file.
     "output_max_file_size": 64 * 1024 * 1024,
-    # __sphinx_doc_output_end__
 
     # === Multiagent ===
     "multiagent": {
@@ -373,10 +381,17 @@ class Agent(Trainable):
 
     @override(Trainable)
     def _stop(self):
+        # Call stop on all evaluators to release resources
+        if hasattr(self, "local_evaluator"):
+            self.local_evaluator.stop()
+        if hasattr(self, "remote_evaluators"):
+            ray.get([ev.stop.remote() for ev in self.remote_evaluators])
+
         # workaround for https://github.com/ray-project/ray/issues/1516
         if hasattr(self, "remote_evaluators"):
             for ev in self.remote_evaluators:
                 ev.__ray_terminate__.remote()
+
         if hasattr(self, "optimizer"):
             self.optimizer.stop()
 
@@ -405,7 +420,7 @@ class Agent(Trainable):
                        prev_action=None,
                        prev_reward=None,
                        info=None,
-                       policy_id="default"):
+                       policy_id=DEFAULT_POLICY_ID):
         """Computes an action for the specified policy.
 
         Note that you can also access the policy object through
@@ -502,8 +517,7 @@ class Agent(Trainable):
                         "tf_session_args": self.
                         config["local_evaluator_tf_session_args"]
                     }),
-                extra_config or {}),
-            0)
+                extra_config or {}))
 
     @DeveloperAPI
     def make_remote_evaluators(self, env_creator, policy_graph, count):
@@ -516,11 +530,10 @@ class Agent(Trainable):
         }
 
         cls = PolicyEvaluator.as_remote(**remote_args).remote
-        num_envs = self.config["num_envs_per_worker"]
 
         return [
             self._make_evaluator(cls, env_creator, policy_graph, i + 1,
-                                 self.config, num_envs) for i in range(count)
+                                 self.config) for i in range(count)
         ]
 
     @DeveloperAPI
@@ -559,6 +572,17 @@ class Agent(Trainable):
         """
         self.local_evaluator.export_policy_checkpoint(
             export_dir, filename_prefix, policy_id)
+
+    @DeveloperAPI
+    def collect_metrics(self, selected_evaluators=None):
+        """Collects metrics from the remote evaluators of this agent.
+
+        This is the same data as returned by a call to train().
+        """
+        return self.optimizer.collect_metrics(
+            self.config["collect_metrics_timeout"],
+            min_history=self.config["metrics_smoothing_episodes"],
+            selected_evaluators=selected_evaluators)
 
     @classmethod
     def resource_help(cls, config):
@@ -630,7 +654,7 @@ class Agent(Trainable):
             self.optimizer, PolicyOptimizer)
 
     def _make_evaluator(self, cls, env_creator, policy_graph, worker_index,
-                        config, num_envs):
+                        config):
         def session_creator():
             logger.debug("Creating TF session {}".format(
                 config["tf_session_args"]))
@@ -672,9 +696,18 @@ class Agent(Trainable):
         else:
             input_evaluation = config["input_evaluation"]
 
+        # Fill in the default policy graph if 'None' is specified in multiagent
+        if self.config["multiagent"]["policy_graphs"]:
+            tmp = self.config["multiagent"]["policy_graphs"]
+            _validate_multiagent_config(tmp, allow_none_graph=True)
+            for k, v in tmp.items():
+                if v[0] is None:
+                    tmp[k] = (policy_graph, v[1], v[2], v[3])
+            policy_graph = tmp
+
         return cls(
             env_creator,
-            self.config["multiagent"]["policy_graphs"] or policy_graph,
+            policy_graph,
             policy_mapping_fn=self.config["multiagent"]["policy_mapping_fn"],
             policies_to_train=self.config["multiagent"]["policies_to_train"],
             tf_session_creator=(session_creator
@@ -685,7 +718,7 @@ class Agent(Trainable):
             preprocessor_pref=config["preprocessor_pref"],
             sample_async=config["sample_async"],
             compress_observations=config["compress_observations"],
-            num_envs=num_envs,
+            num_envs=config["num_envs_per_worker"],
             observation_filter=config["observation_filter"],
             clip_rewards=config["clip_rewards"],
             clip_actions=config["clip_actions"],
