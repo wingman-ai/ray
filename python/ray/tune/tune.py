@@ -242,6 +242,7 @@ def run(run_or_experiment,
                         'debug': None,
                     },
                 },
+                'num_workers': None,
             }
 
             explicitly_defined_flags = set([arg[2:] for arg in sys.argv if arg.startswith('--')])
