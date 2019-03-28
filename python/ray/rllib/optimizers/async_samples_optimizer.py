@@ -50,6 +50,10 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
               minibatch_buffer_size=1,
               learner_queue_size=16,
               _fake_gpus=False):
+        # Maybe move to tune instead of here?
+        if callable(train_batch_size):
+            train_batch_size = train_batch_size(sample_batch_size)
+
         self.train_batch_size = train_batch_size
         self.sample_batch_size = sample_batch_size
         self.broadcast_interval = broadcast_interval
