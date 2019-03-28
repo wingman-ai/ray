@@ -4,6 +4,8 @@ from __future__ import print_function
 
 import time
 
+import tensorflow as tf
+
 from ray.rllib.agents.a3c.a3c_tf_policy_graph import A3CPolicyGraph
 from ray.rllib.agents.impala.vtrace_policy_graph import VTracePolicyGraph
 from ray.rllib.agents.agent import Agent, with_common_config
@@ -105,6 +107,11 @@ class ImpalaAgent(Agent):
         policy_cls = self._get_policy_graph()
         self.local_evaluator = self.make_local_evaluator(
             self.env_creator, policy_cls)
+
+        graph = self.local_evaluator.policy_map['default'].sess.graph
+        writer = tf.summary.FileWriter(self._result_logger.logdir, graph)
+        writer.close()
+
         self.remote_evaluators = self.make_remote_evaluators(
             self.env_creator, policy_cls, self.config["num_workers"])
         self.optimizer = AsyncSamplesOptimizer(self.local_evaluator,
