@@ -11,6 +11,7 @@ import ray
 import ray.experimental.tf_utils
 from ray.rllib.agents.dqn.dqn_policy_graph import (
     _huber_loss, _minimize_and_clip, _scope_vars, _postprocess_dqn)
+from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
 from ray.rllib.models import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.error import UnsupportedSpaceException
@@ -408,7 +409,7 @@ class DDPGPolicyGraph(TFPolicyGraph):
         return tf.train.AdamOptimizer(learning_rate=self.config["lr"])
 
     @override(TFPolicyGraph)
-    def gradients(self, optimizer):
+    def gradients(self, optimizer, loss):
         if self.config["grad_norm_clipping"] is not None:
             actor_grads_and_vars = _minimize_and_clip(
                 optimizer,
@@ -446,7 +447,7 @@ class DDPGPolicyGraph(TFPolicyGraph):
     def extra_compute_grad_fetches(self):
         return {
             "td_error": self.loss.td_error,
-            "stats": self.stats,
+            LEARNER_STATS_KEY: self.stats,
         }
 
     @override(PolicyGraph)

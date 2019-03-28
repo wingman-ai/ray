@@ -9,6 +9,7 @@ import tensorflow as tf
 import tensorflow.contrib.layers as layers
 
 import ray
+from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
 from ray.rllib.models import ModelCatalog, Categorical
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.error import UnsupportedSpaceException
@@ -423,16 +424,16 @@ class DQNPolicyGraph(TFPolicyGraph):
             epsilon=self.config["adam_epsilon"])
 
     @override(TFPolicyGraph)
-    def gradients(self, optimizer):
+    def gradients(self, optimizer, loss):
         if self.config["grad_norm_clipping"] is not None:
             grads_and_vars = _minimize_and_clip(
                 optimizer,
-                self._loss,
+                loss,
                 var_list=self.q_func_vars,
                 clip_val=self.config["grad_norm_clipping"])
         else:
             grads_and_vars = optimizer.compute_gradients(
-                self.loss.loss, var_list=self.q_func_vars)
+                loss, var_list=self.q_func_vars)
         grads_and_vars = [(g, v) for (g, v) in grads_and_vars if g is not None]
         return grads_and_vars
 
@@ -454,7 +455,7 @@ class DQNPolicyGraph(TFPolicyGraph):
     def extra_compute_grad_fetches(self):
         return {
             "td_error": self.loss.td_error,
-            "stats": self.loss.stats,
+            LEARNER_STATS_KEY: self.loss.stats,
         }
 
     @override(PolicyGraph)

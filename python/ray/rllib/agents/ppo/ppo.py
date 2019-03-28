@@ -124,11 +124,10 @@ class PPOAgent(Agent):
 
             # multi-agent
             self.local_evaluator.foreach_trainable_policy(update)
-        res = self.optimizer.collect_metrics(
-            self.config["collect_metrics_timeout"])
+        res = self.collect_metrics()
         res.update(
             timesteps_this_iter=self.optimizer.num_steps_sampled - prev_steps,
-            info=dict(fetches, **res.get("info", {})))
+            info=res.get("info", {}))
 
         # Warn about bad clipping configs
         if self.config["vf_clip_param"] <= 0:
@@ -139,7 +138,7 @@ class PPOAgent(Agent):
             rew_scale = round(
                 abs(res["episode_reward_mean"]) / self.config["vf_clip_param"],
                 0)
-        if rew_scale > 100:
+        if rew_scale > 200:
             logger.warning(
                 "The magnitude of your environment rewards are more than "
                 "{}x the scale of `vf_clip_param`. ".format(rew_scale) +
