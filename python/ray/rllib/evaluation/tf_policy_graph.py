@@ -320,8 +320,6 @@ class TFPolicyGraph(PolicyGraph):
             # add rnd bonus
             bonus = self._rnd.compute_intr_rew(sample_batch["obs"])
 
-            sample_batch["rewards"] = sample_batch[
-                                          "rewards"] * 1.0
             sample_batch["rewards"] += bonus
 
 

@@ -151,9 +151,11 @@ class RND(object):
         convfeat = 32
         enlargement = 2
         rep_size = 512
+                                            # 42 42 1
+        self.ob_rms = RunningMeanStd(shape=list(obs_space.shape[:2]) + [1], use_mpi=False)
 
-        self.ph_mean = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 106
-        self.ph_std = tf.ones(shape=(obs_ph.shape[1], obs_ph.shape[2], 1)) * 46
+        # self.ph_mean = tf.placeholder(dtype=tf.float32, shape=(obs_ph.shape[1], obs_ph.shape[2], 1), name="obmean")
+        # self.ph_std = tf.placeholder(dtype=tf.float32, shape=(obs_ph.shape[1], obs_ph.shape[2], 1), name="obstd")
 
         # build target and predictor networks
         logger.info("Building RND networks...")
@@ -163,7 +165,7 @@ class RND(object):
                 xr = obs_ph
                 xr = tf.cast(xr, tf.float32)
                 xr = xr[:, :, :, -1:]
-                xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
+                # xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
 
                 xr = tf.nn.leaky_relu(conv(xr, 'c1r', nf=convfeat * 1, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xr = tf.nn.leaky_relu(conv(xr, 'c2r', nf=convfeat * 2 * 1, rf=4, stride=2, init_scale=np.sqrt(2)))
@@ -179,7 +181,7 @@ class RND(object):
                 xr = obs_ph
                 xr = tf.cast(xr, tf.float32)
                 xr = xr[:, :, :, -1:]
-                xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
+                # xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
 
                 xrp = tf.nn.leaky_relu(conv(xr, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
@@ -212,12 +214,21 @@ class RND(object):
         return intr_rew
 
     def compute_intr_rew(self, obs):
-        sess_obs = self._sess.run(self._intr_rew, feed_dict={self._obs_ph: obs, self._is_training_ph: False}).T
+        self.ob_rms.update(obs[:, :, :, -1:])
+
+
+
+        feed_dict = {
+            self._obs_ph: obs,
+            # self.ph_mean: self.ob_rms.mean,
+            # self.ph_std: self.ob_rms.var ** 0.5,
+            self._is_training_ph: False,
+        }
+
+        sess_obs = self._sess.run(self._intr_rew, feed_dict=feed_dict).T
         rffs_int = np.array([self.rff_int.update(rew) for rew in sess_obs.T])
         self.rff_rms_int.update(rffs_int.ravel())
         rews_int = sess_obs / np.sqrt(self.rff_rms_int.var)
-
-
 
         return np.squeeze(rews_int)
 
