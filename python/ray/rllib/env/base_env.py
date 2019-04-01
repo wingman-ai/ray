@@ -9,6 +9,7 @@ from ray.rllib.utils.annotations import override, PublicAPI
 
 ASYNC_RESET_RETURN = "async_reset_return"
 
+
 @PublicAPI
 class BaseEnv(object):
     """The lowest-level env interface used by RLlib for sampling.
@@ -79,7 +80,7 @@ class BaseEnv(object):
                     make_env=None,
                     num_envs=1,
                     remote_envs=False,
-                    remote_worker_env_timeout_ms=0):
+                    remote_env_batch_wait_ms=0):
         """Wraps any env type as needed to expose the async interface."""
 
         from ray.rllib.env.remote_vector_env import RemoteVectorEnv
@@ -92,7 +93,10 @@ class BaseEnv(object):
             if isinstance(env, MultiAgentEnv):
                 if remote_envs:
                     env = RemoteVectorEnv(
-                        make_env, num_envs, multiagent=True, remote_worker_env_timeout_ms=remote_worker_env_timeout_ms)
+                        make_env,
+                        num_envs,
+                        multiagent=True,
+                        remote_env_batch_wait_ms=remote_env_batch_wait_ms)
                 else:
                     env = _MultiAgentEnvToBaseEnv(
                         make_env=make_env,
@@ -108,7 +112,10 @@ class BaseEnv(object):
             else:
                 if remote_envs:
                     env = RemoteVectorEnv(
-                        make_env, num_envs, multiagent=False, remote_worker_env_timeout_ms=remote_worker_env_timeout_ms)
+                        make_env,
+                        num_envs,
+                        multiagent=False,
+                        remote_env_batch_wait_ms=remote_env_batch_wait_ms)
                 else:
                     env = VectorEnv.wrap(
                         make_env=make_env,
