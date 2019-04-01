@@ -219,6 +219,13 @@ docker run --rm --shm-size=${SHM_SIZE} --memory=${MEMORY_SIZE} $DOCKER_SHA \
     --env CartPole-v0 \
     --run IMPALA \
     --stop '{"training_iteration": 1}' \
+    --config '{"num_gpus": 0, "num_workers": 2, "num_aggregation_workers": 2, "min_iter_time_s": 1}'
+
+docker run --rm --shm-size=${SHM_SIZE} --memory=${MEMORY_SIZE} $DOCKER_SHA \
+    /ray/ci/suppress_output /ray/python/ray/rllib/train.py \
+    --env CartPole-v0 \
+    --run IMPALA \
+    --stop '{"training_iteration": 1}' \
     --config '{"num_gpus": 0, "num_workers": 2, "min_iter_time_s": 1, "model": {"use_lstm": true}}'
 
 docker run --rm --shm-size=${SHM_SIZE} --memory=${MEMORY_SIZE} $DOCKER_SHA \
@@ -404,7 +411,7 @@ docker run --rm --shm-size=${SHM_SIZE} --memory=${MEMORY_SIZE} $DOCKER_SHA \
     --env PongDeterministic-v4 \
     --run IMPALA \
     --stop='{"timesteps_total": 40000}' \
-    --ray-object-store-memory=500000000 \
+    --ray-object-store-memory=1000000000 \
     --config '{"num_workers": 1, "num_gpus": 0, "num_envs_per_worker": 32, "sample_batch_size": 50, "train_batch_size": 50, "learner_queue_size": 1}'
 
 docker run --rm --shm-size=${SHM_SIZE} --memory=${MEMORY_SIZE} $DOCKER_SHA \
