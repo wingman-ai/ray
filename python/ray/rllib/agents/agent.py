@@ -148,13 +148,13 @@ COMMON_CONFIG = {
     # If using num_envs_per_worker > 1, whether to create those new envs in
     # remote processes instead of in the same worker. This adds overheads, but
     # can make sense if your envs can take much time to step / reset
-    # (e.g., for StarCraft)
+    # (e.g., for StarCraft). Use this cautiously; overheads are significant.
     "remote_worker_envs": False,
     # Timeout that remote workers are waiting when polling environments.
     # 0 (continue when at least one env is ready) is a reasonable default,
     # but optimal value could be obtained by measuring your environment
     # step / reset and model inference perf.
-    "remote_worker_env_timeout_ms": 0,
+    "remote_env_batch_wait_ms": 0,
 
     # === Offline Datasets ===
     # Specify how to generate experiences:
@@ -377,7 +377,7 @@ class Agent(Trainable):
 
         # TODO(ekl) setting the graph is unnecessary for PyTorch agents
         with tf.Graph().as_default():
-            self._init()
+            self._init(self.config, self.env_creator)
 
     @override(Trainable)
     def _stop(self):
@@ -385,7 +385,8 @@ class Agent(Trainable):
         if hasattr(self, "local_evaluator"):
             self.local_evaluator.stop()
         if hasattr(self, "remote_evaluators"):
-            ray.get([ev.stop.remote() for ev in self.remote_evaluators])
+            for ev in self.remote_evaluators:
+                ev.stop.remote()
 
         # workaround for https://github.com/ray-project/ray/issues/1516
         if hasattr(self, "remote_evaluators"):
@@ -408,7 +409,7 @@ class Agent(Trainable):
         self.__setstate__(extra_data)
 
     @DeveloperAPI
-    def _init(self):
+    def _init(self, config, env_creator):
         """Subclasses should override this for custom initialization."""
 
         raise NotImplementedError
@@ -447,9 +448,19 @@ class Agent(Trainable):
             preprocessed, update=False)
         if state:
             return self.get_policy(policy_id).compute_single_action(
-                filtered_obs, state, prev_action, prev_reward, info)
+                filtered_obs,
+                state,
+                prev_action,
+                prev_reward,
+                info,
+                clip_actions=self.config["clip_actions"])
         return self.get_policy(policy_id).compute_single_action(
-            filtered_obs, state, prev_action, prev_reward, info)[0]
+            filtered_obs,
+            state,
+            prev_action,
+            prev_reward,
+            info,
+            clip_actions=self.config["clip_actions"])[0]
 
     @property
     def iteration(self):
@@ -667,12 +678,12 @@ class Agent(Trainable):
             input_creator = (lambda ioctx: ioctx.default_sampler_input())
         elif isinstance(config["input"], dict):
             input_creator = (lambda ioctx: ShuffledInput(
-                MixedInput(config["input"], ioctx),
-                config["shuffle_buffer_size"]))
+                MixedInput(config["input"], ioctx), config[
+                    "shuffle_buffer_size"]))
         else:
             input_creator = (lambda ioctx: ShuffledInput(
-                JsonReader(config["input"], ioctx),
-                config["shuffle_buffer_size"]))
+                JsonReader(config["input"], ioctx), config[
+                    "shuffle_buffer_size"]))
 
         if isinstance(config["output"], FunctionType):
             output_creator = config["output"]
@@ -734,7 +745,8 @@ class Agent(Trainable):
             input_evaluation=input_evaluation,
             output_creator=output_creator,
             remote_worker_envs=config["remote_worker_envs"],
-            remote_worker_env_timeout_ms=config["remote_worker_env_timeout_ms"])
+            remote_env_batch_wait_ms=config["remote_env_batch_wait_ms"],
+            _fake_sampler=config.get("_fake_sampler", False))
 
     @override(Trainable)
     def _export_model(self, export_formats, export_dir):

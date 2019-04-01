@@ -282,8 +282,16 @@ class TestMultiAgentEnv(unittest.TestCase):
 
         # Reset processing
         self.assertRaises(
-            ValueError,
-            lambda: env.send_actions({0: {0: 0, 1: 0}, 1: {0: 0, 1: 0}}))
+            ValueError, lambda: env.send_actions({
+                0: {
+                    0: 0,
+                    1: 0
+                },
+                1: {
+                    0: 0,
+                    1: 0
+                }
+            }))
         self.assertEqual(env.try_reset(0), {0: 0, 1: 0})
         self.assertEqual(env.try_reset(1), {0: 0, 1: 0})
         env.send_actions({0: {0: 0, 1: 0}, 1: {0: 0, 1: 0}})
@@ -347,7 +355,7 @@ class TestMultiAgentEnv(unittest.TestCase):
             batch_steps=50,
             num_envs=4,
             remote_worker_envs=True,
-            remote_worker_env_timeout_ms=99999999)
+            remote_env_batch_wait_ms=99999999)
         batch = ev.sample()
         self.assertEqual(batch.count, 200)
 
@@ -600,15 +608,14 @@ class TestMultiAgentEnv(unittest.TestCase):
             remote_evs = []
         optimizer = optimizer_cls(ev, remote_evs, {})
         for i in range(200):
-            ev.foreach_policy(
-                lambda p, _: p.set_epsilon(max(0.02, 1 - i * .02))
-                if isinstance(p, DQNPolicyGraph) else None)
+            ev.foreach_policy(lambda p, _: p.set_epsilon(
+                max(0.02, 1 - i * .02))
+                              if isinstance(p, DQNPolicyGraph) else None)
             optimizer.step()
             result = collect_metrics(ev, remote_evs)
             if i % 20 == 0:
-                ev.foreach_policy(
-                    lambda p, _: p.update_target()
-                    if isinstance(p, DQNPolicyGraph) else None)
+                ev.foreach_policy(lambda p, _: p.update_target() if isinstance(
+                    p, DQNPolicyGraph) else None)
                 print("Iter {}, rew {}".format(i,
                                                result["policy_reward_mean"]))
                 print("Total reward", result["episode_reward_mean"])
