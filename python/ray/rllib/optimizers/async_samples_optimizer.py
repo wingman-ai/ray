@@ -44,6 +44,9 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
               learner_queue_size=16,
               num_aggregation_workers=0,
               _fake_gpus=False):
+        if callable(train_batch_size):
+            train_batch_size = train_batch_size(sample_batch_size)
+
         self._stats_start_time = time.time()
         self._last_stats_time = {}
         self._last_stats_sum = {}
