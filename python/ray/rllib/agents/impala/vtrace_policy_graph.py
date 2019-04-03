@@ -236,7 +236,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
         def make_time_major(tensor, drop_last=False):
             with tf.name_scope('make_time_major'):
-                _make_time_major(tensor, drop_last=False)
+                return _make_time_major(tensor, drop_last=False)
 
         if self.model.state_in:
             max_seq_len = tf.reduce_max(self.model.seq_lens) - 1
