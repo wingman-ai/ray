@@ -357,9 +357,9 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             influence_stats = {
                 "total_influence_loss": total_influence_loss,
-                "influence_pi_loss": pi_loss_abs / total_influence_loss,
+                "influence_policy_loss": pi_loss_abs / total_influence_loss,
                 "influence_vf_loss": vf_loss_abs / total_influence_loss,
-                "influence_en_loss": en_loss_abs / total_influence_loss,
+                "influence_entropy_loss": en_loss_abs / total_influence_loss,
             }
 
             if hasattr(self.model, 'lp_loss'):
