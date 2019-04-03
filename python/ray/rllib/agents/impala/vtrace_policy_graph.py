@@ -88,19 +88,19 @@ class VTraceLoss(object):
         # The policy gradients loss
         self.pi_loss = -tf.reduce_sum(
             tf.boolean_mask(actions_logp * self.vtrace_returns.pg_advantages,
-                            valid_mask))
+                            valid_mask), name='pi_loss')
 
         # The baseline loss
         delta = tf.boolean_mask(values - self.vtrace_returns.vs, valid_mask)
-        self.vf_loss = 0.5 * tf.reduce_sum(tf.square(delta))
+        self.vf_loss = tf.math.multiply(0.5, tf.reduce_sum(tf.square(delta)), name='vf_loss')
 
         # The entropy loss
         self.entropy = tf.reduce_sum(
-            tf.boolean_mask(actions_entropy, valid_mask))
+            tf.boolean_mask(actions_entropy, valid_mask), name='entropy_loss')
 
         # The summed weighted loss
-        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff -
-                           self.entropy * entropy_coeff)
+        self.total_loss = tf.math.add(self.pi_loss, self.vf_loss * vf_loss_coeff - self.entropy * entropy_coeff,
+                                      name='total_loss')
 
 
 class VTracePostprocessing(object):
@@ -163,7 +163,8 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 tf.float32, [None, sum(output_hidden_shape)],
                 name="behaviour_logits")
             observations = tf.placeholder(
-                tf.float32, [None] + list(observation_space.shape))
+                tf.float32, [None] + list(observation_space.shape),
+                name='observations')
             existing_state_in = None
             existing_seq_lens = None
 
@@ -200,7 +201,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           tf.get_variable_scope().name)
 
-        def make_time_major(tensor, drop_last=False):
+        def _make_time_major(tensor, drop_last=False):
             """Swaps batch and trajectory axis.
             Args:
                 tensor: A tensor or list of tensors to reshape.
@@ -211,7 +212,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 swapped axes.
             """
             if isinstance(tensor, list):
-                return [make_time_major(t, drop_last) for t in tensor]
+                return [_make_time_major(t, drop_last) for t in tensor]
 
             if self.model.state_init:
                 B = tf.shape(self.model.seq_lens)[0]
@@ -233,6 +234,10 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 return res[:-1]
             return res
 
+        def make_time_major(tensor, drop_last=False):
+            with tf.name_scope('make_time_major'):
+                _make_time_major(tensor, drop_last=False)
+
         if self.model.state_in:
             max_seq_len = tf.reduce_max(self.model.seq_lens) - 1
             mask = tf.sequence_mask(self.model.seq_lens, max_seq_len)
@@ -251,57 +256,27 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         else:
             raise ValueError('Not supported action_dist distribution')
 
-        action_probs = [tf.nn.softmax(adi, axis=1) for adi in action_dist_inputs]
-        action_probs_means = [tf.reduce_mean(ap, axis=0) for ap in action_probs]
-        action_probs_max = [tf.reduce_max(apm) for apm in action_probs_means]
-        action_probs_min = [tf.reduce_min(apm) for apm in action_probs_means]
-        values_mean = tf.reduce_mean(values)
-
         # Inputs are reshaped from [B * T] => [T - 1, B] for V-trace calc.
-        self.loss = VTraceLoss(
-            actions=make_time_major(loss_actions, drop_last=True),
-            actions_logp=make_time_major(
-                action_dist.logp(actions), drop_last=True),
-            actions_entropy=make_time_major(
-                action_dist.entropy(), drop_last=True),
-            dones=make_time_major(dones, drop_last=True),
-            behaviour_logits=make_time_major(
-                unpacked_behaviour_logits, drop_last=True),
-            target_logits=make_time_major(unpacked_outputs, drop_last=True),
-            discount=config["gamma"],
-            rewards=make_time_major(rewards, drop_last=True),
-            values=make_time_major(values, drop_last=True),
-            bootstrap_value=make_time_major(values)[-1],
-            valid_mask=make_time_major(mask, drop_last=True),
-            vf_loss_coeff=self.config["vf_loss_coeff"],
-            entropy_coeff=self.config["entropy_coeff"],
-            clip_rho_threshold=self.config["vtrace_clip_rho_threshold"],
-            clip_pg_rho_threshold=self.config["vtrace_clip_pg_rho_threshold"])
-
-        vtrace_pg_advantages_mean = tf.reduce_mean(self.loss.vtrace_returns.pg_advantages)
-        vtrace_vs_mean = tf.reduce_mean(self.loss.vtrace_returns.vs)
-
-        # KL divergence between worker and learner logits for debugging
-        model_dist = MultiCategorical(unpacked_outputs)
-        behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
-
-        kls = model_dist.kl(behaviour_dist)
-        if len(kls) > 1:
-            self.KL_stats = {}
-
-            for i, kl in enumerate(kls):
-                self.KL_stats.update({
-                    "mean_KL_{}".format(i): tf.reduce_mean(kl),
-                    "max_KL_{}".format(i): tf.reduce_max(kl),
-                    "median_KL_{}".format(i): tf.contrib.distributions.
-                    percentile(kl, 50.0),
-                })
-        else:
-            self.KL_stats = {
-                "mean_KL": tf.reduce_mean(kls[0]),
-                "max_KL": tf.reduce_max(kls[0]),
-                "median_KL": tf.contrib.distributions.percentile(kls[0], 50.0),
-            }
+        with tf.name_scope('vtrace_loss'):
+            self.loss = VTraceLoss(
+                actions=make_time_major(loss_actions, drop_last=True),
+                actions_logp=make_time_major(
+                    action_dist.logp(actions), drop_last=True),
+                actions_entropy=make_time_major(
+                    action_dist.entropy(), drop_last=True),
+                dones=make_time_major(dones, drop_last=True),
+                behaviour_logits=make_time_major(
+                    unpacked_behaviour_logits, drop_last=True),
+                target_logits=make_time_major(unpacked_outputs, drop_last=True),
+                discount=config["gamma"],
+                rewards=make_time_major(rewards, drop_last=True),
+                values=make_time_major(values, drop_last=True),
+                bootstrap_value=make_time_major(values)[-1],
+                valid_mask=make_time_major(mask, drop_last=True),
+                vf_loss_coeff=self.config["vf_loss_coeff"],
+                entropy_coeff=self.config["entropy_coeff"],
+                clip_rho_threshold=self.config["vtrace_clip_rho_threshold"],
+                clip_pg_rho_threshold=self.config["vtrace_clip_pg_rho_threshold"])
 
         # Initialize TFPolicyGraph
         loss_in = [
@@ -313,84 +288,118 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
             (SampleBatch.PREV_ACTIONS, prev_actions),
             (SampleBatch.PREV_REWARDS, prev_rewards),
         ]
+
         LearningRateSchedule.__init__(self, self.config["lr"],
                                       self.config["lr_schedule"])
-        TFPolicyGraph.__init__(
-            self,
-            observation_space,
-            action_space,
-            self.sess,
-            obs_input=observations,
-            action_sampler=action_dist.sample(),
-            action_prob=action_dist.sampled_action_prob(),
-            loss=self.loss.total_loss,
-            model=self.model,
-            loss_inputs=loss_in,
-            state_inputs=self.model.state_in,
-            state_outputs=self.model.state_out,
-            prev_action_input=prev_actions,
-            prev_reward_input=prev_rewards,
-            seq_lens=self.model.seq_lens,
-            max_seq_len=self.config["model"]["max_seq_len"],
-            batch_divisibility_req=self.config["sample_batch_size"])
 
-        pi_loss_abs = tf.abs(self.loss.pi_loss)
-        vf_loss_abs = tf.abs(self.loss.vf_loss * self.config["vf_loss_coeff"])
-        en_loss_abs = tf.abs(self.loss.entropy * self.config["entropy_coeff"])
-        total_influence_loss = pi_loss_abs + vf_loss_abs + en_loss_abs
+        with tf.name_scope('TFPolicyGraph.__init__'):
+            TFPolicyGraph.__init__(
+                self,
+                observation_space,
+                action_space,
+                self.sess,
+                obs_input=observations,
+                action_sampler=action_dist.sample(),
+                action_prob=action_dist.sampled_action_prob(),
+                loss=self.loss.total_loss,
+                model=self.model,
+                loss_inputs=loss_in,
+                state_inputs=self.model.state_in,
+                state_outputs=self.model.state_out,
+                prev_action_input=prev_actions,
+                prev_reward_input=prev_rewards,
+                seq_lens=self.model.seq_lens,
+                max_seq_len=self.config["model"]["max_seq_len"],
+                batch_divisibility_req=self.config["sample_batch_size"])
 
-        if hasattr(self.model, 'lp_loss'):
-            lp_loss_abs = tf.abs(self.model.lp_loss)
-            total_influence_loss += lp_loss_abs
-        if hasattr(self.model, 'tae_loss'):
-            tae_loss_abs = tf.abs(self.model.tae_loss)
-            total_influence_loss += tae_loss_abs
+        with tf.name_scope('stats_fetches'):
+            # KL divergence between worker and learner logits for debugging
+            model_dist = MultiCategorical(unpacked_outputs)
+            behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
 
-        influence_stats = {
-            "total_influence_loss": total_influence_loss,
-            "influence_pi_loss": pi_loss_abs / total_influence_loss,
-            "influence_vf_loss": vf_loss_abs / total_influence_loss,
-            "influence_en_loss": en_loss_abs / total_influence_loss,
-        }
+            kls = model_dist.kl(behaviour_dist)
+            if len(kls) > 1:
+                self.KL_stats = {}
 
-        if hasattr(self.model, 'lp_loss'):
-            influence_stats.update({
-                "influence_lp_loss": lp_loss_abs / total_influence_loss,
-            })
-        if hasattr(self.model, 'tae_loss'):
-            influence_stats.update({
-                "influence_tae_loss": tae_loss_abs / total_influence_loss,
-            })
+                for i, kl in enumerate(kls):
+                    self.KL_stats.update({
+                        "mean_KL_{}".format(i): tf.reduce_mean(kl),
+                        "max_KL_{}".format(i): tf.reduce_max(kl),
+                        "median_KL_{}".format(i): tf.contrib.distributions.
+                        percentile(kl, 50.0),
+                    })
+            else:
+                self.KL_stats = {
+                    "mean_KL": tf.reduce_mean(kls[0]),
+                    "max_KL": tf.reduce_max(kls[0]),
+                    "median_KL": tf.contrib.distributions.percentile(kls[0], 50.0),
+                }
 
-        self.sess.run(tf.global_variables_initializer())
+            action_probs = [tf.nn.softmax(adi, axis=1) for adi in action_dist_inputs]
+            action_probs_means = [tf.reduce_mean(ap, axis=0) for ap in action_probs]
+            action_probs_max = [tf.reduce_max(apm) for apm in action_probs_means]
+            action_probs_min = [tf.reduce_min(apm) for apm in action_probs_means]
+            values_mean = tf.reduce_mean(values)
+            vtrace_pg_advantages_mean = tf.reduce_mean(self.loss.vtrace_returns.pg_advantages)
+            vtrace_vs_mean = tf.reduce_mean(self.loss.vtrace_returns.vs)
 
-        self.stats_fetches = {
-            LEARNER_STATS_KEY: dict({
-                "cur_lr": tf.cast(self.cur_lr, tf.float64),
-                "policy_loss": self.loss.pi_loss,
-                "entropy": self.loss.entropy,
-                "grad_gnorm": tf.global_norm(self._grads),
-                "var_gnorm": tf.global_norm(self.var_list),
-                "vf_loss": self.loss.vf_loss,
-                "vf_explained_var": explained_variance(
-                    tf.reshape(self.loss.vtrace_returns.vs, [-1]),
-                    tf.reshape(make_time_major(values, drop_last=True), [-1])),
-                "values_mean": values_mean,
-                "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
-                "vtrace_vs_mean": vtrace_vs_mean,
-            },
-            **self.KL_stats,
-            **influence_stats,
-            **dict([(v.name + '_gradient_mean', tf.reduce_mean(g)) for g, v in self._grads_and_vars]),
-            **dict([(v.name + '_gradient_min', tf.reduce_min(g)) for g, v in self._grads_and_vars]),
-            **dict([(v.name + '_gradient_max', tf.reduce_max(g)) for g, v in self._grads_and_vars]),
-            **dict([(v.name + '_activation_mean', tf.reduce_mean(v)) for _, v in self._grads_and_vars]),
-            **dict([(v.name + '_activation_min', tf.reduce_min(v)) for _, v in self._grads_and_vars]),
-            **dict([(v.name + '_activation_max', tf.reduce_max(v)) for _, v in self._grads_and_vars]),
-            **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
-            **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
-            ),
-        }
+            pi_loss_abs = tf.abs(self.loss.pi_loss)
+            vf_loss_abs = tf.abs(self.loss.vf_loss * self.config["vf_loss_coeff"])
+            en_loss_abs = tf.abs(self.loss.entropy * self.config["entropy_coeff"])
+            total_influence_loss = pi_loss_abs + vf_loss_abs + en_loss_abs
+
+            if hasattr(self.model, 'lp_loss'):
+                lp_loss_abs = tf.abs(self.model.lp_loss)
+                total_influence_loss += lp_loss_abs
+            if hasattr(self.model, 'tae_loss'):
+                tae_loss_abs = tf.abs(self.model.tae_loss)
+                total_influence_loss += tae_loss_abs
+
+            influence_stats = {
+                "total_influence_loss": total_influence_loss,
+                "influence_pi_loss": pi_loss_abs / total_influence_loss,
+                "influence_vf_loss": vf_loss_abs / total_influence_loss,
+                "influence_en_loss": en_loss_abs / total_influence_loss,
+            }
+
+            if hasattr(self.model, 'lp_loss'):
+                influence_stats.update({
+                    "influence_lp_loss": lp_loss_abs / total_influence_loss,
+                })
+            if hasattr(self.model, 'tae_loss'):
+                influence_stats.update({
+                    "influence_tae_loss": tae_loss_abs / total_influence_loss,
+                })
+
+            self.sess.run(tf.global_variables_initializer())
+
+            self.stats_fetches = {
+                LEARNER_STATS_KEY: dict({
+                    "cur_lr": tf.cast(self.cur_lr, tf.float64),
+                    "policy_loss": self.loss.pi_loss,
+                    "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
+                    "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
+                    "grad_gnorm": tf.global_norm(self._grads),
+                    "var_gnorm": tf.global_norm(self.var_list),
+                    "vf_explained_var": explained_variance(
+                        tf.reshape(self.loss.vtrace_returns.vs, [-1]),
+                        tf.reshape(make_time_major(values, drop_last=True), [-1])),
+                    "values_mean": values_mean,
+                    "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
+                    "vtrace_vs_mean": vtrace_vs_mean,
+                },
+                **self.KL_stats,
+                **influence_stats,
+                **dict([(v.name + '_gradient_mean', tf.reduce_mean(g)) for g, v in self._grads_and_vars]),
+                **dict([(v.name + '_gradient_min', tf.reduce_min(g)) for g, v in self._grads_and_vars]),
+                **dict([(v.name + '_gradient_max', tf.reduce_max(g)) for g, v in self._grads_and_vars]),
+                **dict([(v.name + '_activation_mean', tf.reduce_mean(v)) for _, v in self._grads_and_vars]),
+                **dict([(v.name + '_activation_min', tf.reduce_min(v)) for _, v in self._grads_and_vars]),
+                **dict([(v.name + '_activation_max', tf.reduce_max(v)) for _, v in self._grads_and_vars]),
+                **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
+                **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
+                ),
+            }
 
     @override(TFPolicyGraph)
     def copy(self, existing_inputs):

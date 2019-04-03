@@ -303,7 +303,7 @@ class TFPolicyGraph(PolicyGraph):
         This can be called safely before __init__ has run.
         """
         if not hasattr(self, "_is_training"):
-            self._is_training = tf.placeholder_with_default(False, ())
+            self._is_training = tf.placeholder_with_default(False, (), name='is_training')
         return self._is_training
 
     def _extra_input_signature_def(self):
