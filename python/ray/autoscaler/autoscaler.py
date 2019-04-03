@@ -3,34 +3,31 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
-import json
 import hashlib
+import json
+import logging
 import math
 import os
-from six import string_types
-from six.moves import queue
 import subprocess
 import threading
-import logging
 import time
-
 from collections import defaultdict
 
 import numpy as np
+import ray.services as services
 import yaml
-
-from ray.ray_constants import AUTOSCALER_MAX_NUM_FAILURES, \
-    AUTOSCALER_MAX_LAUNCH_BATCH, AUTOSCALER_MAX_CONCURRENT_LAUNCHES,\
-    AUTOSCALER_UPDATE_INTERVAL_S, AUTOSCALER_HEARTBEAT_TIMEOUT_S
+from ray.autoscaler.docker import dockerize_if_needed
 from ray.autoscaler.node_provider import get_node_provider, \
     get_default_config
-from ray.autoscaler.updater import NodeUpdaterThread
-from ray.autoscaler.docker import dockerize_if_needed
 from ray.autoscaler.tags import (TAG_RAY_LAUNCH_CONFIG, TAG_RAY_RUNTIME_CONFIG,
                                  TAG_RAY_NODE_STATUS, TAG_RAY_NODE_TYPE,
                                  TAG_RAY_NODE_NAME)
-
-import ray.services as services
+from ray.autoscaler.updater import NodeUpdaterThread
+from ray.ray_constants import AUTOSCALER_MAX_NUM_FAILURES, \
+    AUTOSCALER_MAX_LAUNCH_BATCH, AUTOSCALER_MAX_CONCURRENT_LAUNCHES, \
+    AUTOSCALER_UPDATE_INTERVAL_S, AUTOSCALER_HEARTBEAT_TIMEOUT_S
+from six import string_types
+from six.moves import queue
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +35,7 @@ REQUIRED, OPTIONAL = True, False
 
 # For (a, b), if a is a dictionary object, then
 # no extra fields can be introduced.
+
 CLUSTER_CONFIG_SCHEMA = {
     # An unique identifier for the head node and workers of this cluster.
     "cluster_name": (str, REQUIRED),
@@ -91,7 +89,17 @@ CLUSTER_CONFIG_SCHEMA = {
         {
             "image": (str, OPTIONAL),  # e.g. tensorflow/tensorflow:1.5.0-py3
             "container_name": (str, OPTIONAL),  # e.g., ray_docker
+            # shared options for starting head/worker docker
             "run_options": (list, OPTIONAL),
+
+            # image for head node, takes precedence over "image" if specified
+            "head_image": (str, OPTIONAL),
+            # head specific run options, appended to run_options
+            "head_run_options": (list, OPTIONAL),
+            # analogous to head_image
+            "worker_image": (str, OPTIONAL),
+            # analogous to head_run_options
+            "worker_run_options": (list, OPTIONAL),
         },
         OPTIONAL),
 
@@ -618,8 +626,9 @@ class StandardAutoscaler(object):
         self.launch_queue.put((config, count))
 
     def workers(self):
-        return self.provider.non_terminated_nodes(
-            tag_filters={TAG_RAY_NODE_TYPE: "worker"})
+        return self.provider.non_terminated_nodes(tag_filters={
+            TAG_RAY_NODE_TYPE: "worker"
+        })
 
     def log_info_string(self, nodes):
         logger.info("StandardAutoscaler: {}".format(self.info_string(nodes)))
@@ -650,7 +659,7 @@ def typename(v):
 
 def check_required(config, schema):
     # Check required schema entries
-    if type(config) is not dict:
+    if not isinstance(config, dict):
         raise ValueError("Config is not a dictionary")
 
     for k, (v, kreq) in schema.items():
@@ -668,7 +677,7 @@ def check_required(config, schema):
 
 def check_extraneous(config, schema):
     """Make sure all items of config are in schema"""
-    if type(config) is not dict:
+    if not isinstance(config, dict):
         raise ValueError("Config {} is not a dictionary".format(config))
     for k in config:
         if k not in schema:
@@ -691,7 +700,7 @@ def check_extraneous(config, schema):
 
 def validate_config(config, schema=CLUSTER_CONFIG_SCHEMA):
     """Required Dicts indicate that no extra fields can be introduced."""
-    if type(config) is not dict:
+    if not isinstance(config, dict):
         raise ValueError("Config {} is not a dictionary".format(config))
 
     check_required(config, schema)
