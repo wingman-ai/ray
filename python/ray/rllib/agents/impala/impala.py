@@ -122,6 +122,7 @@ class ImpalaAgent(Agent):
         graph = self.local_evaluator.policy_map[DEFAULT_POLICY_ID].sess.graph
         writer = tf.summary.FileWriter(self._result_logger.logdir, graph)
         writer.close()
+        print('-' * 30 + ' GRAPH SAVED ' + '-' * 30)
 
         if self.config["num_aggregation_workers"] > 0:
             # Create co-located aggregator actors first for placement pref
