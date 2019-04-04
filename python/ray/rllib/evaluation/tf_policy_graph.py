@@ -16,7 +16,7 @@ from ray.rllib.evaluation.sample_batch import SampleBatch
 from ray.rllib.models.lstm import chop_into_sequences
 from ray.rllib.utils.annotations import override, DeveloperAPI
 from ray.rllib.utils.debug import log_once, summarize
-from ray.rllib.utils.schedules import ConstantSchedule, PiecewiseSchedule
+from ray.rllib.utils.schedules import ConstantSchedule, PiecewiseSchedule, LinearSchedule
 from ray.rllib.utils.tf_run_builder import TFRunBuilder
 
 logger = logging.getLogger(__name__)
@@ -494,9 +494,16 @@ class LearningRateSchedule(object):
         self.cur_lr = tf.get_variable("lr", initializer=lr)
         if lr_schedule is None:
             self.lr_schedule = ConstantSchedule(lr)
-        else:
+        elif isinstance(lr_schedule, list):
             self.lr_schedule = PiecewiseSchedule(
                 lr_schedule, outside_value=lr_schedule[-1][-1])
+        elif isinstance(lr_schedule, dict):
+            self.lr_schedule = LinearSchedule(
+                schedule_timesteps=lr_schedule["schedule_timesteps"],
+                initial_p=lr,
+                final_p=lr_schedule["final_lr"])
+        else:
+            raise ValueError('lr_schedule must be either list, dict or None')
 
     @override(PolicyGraph)
     def on_global_var_update(self, global_vars):
