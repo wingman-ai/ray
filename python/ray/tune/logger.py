@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import csv
 import json
 import logging
@@ -97,6 +98,32 @@ class JsonLogger(Logger):
         self.local_out.close()
 
 
+def make_histogram(values, bins=1000):
+    # Create histogram using numpy
+    counts, bin_edges = np.histogram(values, bins=bins)
+
+    # Fill fields of histogram proto
+    hist = tf.HistogramProto()
+    hist.min = float(np.min(values))
+    hist.max = float(np.max(values))
+    hist.num = int(np.prod(values.shape))
+    hist.sum = float(np.sum(values))
+    hist.sum_squares = float(np.sum(values**2))
+
+    # Requires equal number as bins, where the first goes from -DBL_MAX to bin_edges[1]
+    # See https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/summary.proto#L30
+    # Thus, we drop the start of the first bin
+    bin_edges = bin_edges[1:]
+
+    # Add bin edges and counts
+    for edge in bin_edges:
+        hist.bucket_limit.append(edge)
+    for c in counts:
+        hist.bucket.append(c)
+
+    return hist
+
+
 def to_tf_values(result, path):
     values = []
     for attr, value in result.items():
@@ -106,9 +133,19 @@ def to_tf_values(result, path):
             else:
                 type_list = [int, float]
             if type(value) in type_list:
+                learner_path = ["ray", "tune", "info", "learner"]
+                if path[:len(learner_path)] == learner_path:
+                    tag = "/".join(path[len(learner_path):] + [attr])
+                else:
+                    tag = "/".join(path + [attr])
+
                 values.append(
                     tf.Summary.Value(
-                        tag="/".join(path + [attr]), simple_value=value))
+                        tag=tag, simple_value=value))
+            elif isinstance(value, np.ndarray):
+                values.append(
+                    tf.Summary.Value(
+                        tag=f"{path[-1]}/{attr}", histo=make_histogram(value)))
             elif type(value) is dict:
                 values.extend(to_tf_values(value, path + [attr]))
     return values
@@ -275,7 +312,13 @@ class _SafeFallbackEncoder(json.JSONEncoder):
 
 
 def pretty_print(result):
-    result = result.copy()
+    result = copy.deepcopy(result)
+
+    try:
+        result['info']['learner']['histograms'] = '<not displayed>'
+    except KeyError:
+        pass
+
     result.update(config=None)  # drop config from pretty print
     out = {}
     for k, v in result.items():

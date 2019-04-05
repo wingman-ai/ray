@@ -356,10 +356,10 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 total_influence_loss += tae_loss_abs
 
             influence_stats = {
-                "total_influence_loss": total_influence_loss,
-                "influence_policy_loss": pi_loss_abs / total_influence_loss,
-                "influence_vf_loss": vf_loss_abs / total_influence_loss,
-                "influence_entropy_loss": en_loss_abs / total_influence_loss,
+                "_influence_total_loss": total_influence_loss,
+                "_influence_policy_loss": pi_loss_abs / total_influence_loss,
+                "_influence_vf_loss": vf_loss_abs / total_influence_loss,
+                "_influence_entropy_loss": en_loss_abs / total_influence_loss,
             }
 
             if hasattr(self.model, 'lp_loss'):
@@ -375,30 +375,36 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
-                    "cur_lr": tf.cast(self.cur_lr, tf.float64),
-                    "policy_loss": self.loss.pi_loss,
-                    "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
-                    "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
-                    "grad_gnorm": tf.global_norm(self._grads),
-                    "var_gnorm": tf.global_norm(self.var_list),
-                    "vf_explained_var": explained_variance(
-                        tf.reshape(self.loss.vtrace_returns.vs, [-1]),
-                        tf.reshape(make_time_major(values, drop_last=True), [-1])),
-                    "values_mean": values_mean,
-                    "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
-                    "vtrace_vs_mean": vtrace_vs_mean,
-                },
-                **self.KL_stats,
-                **influence_stats,
-                **dict([(v.name + '_gradient_mean', tf.reduce_mean(g)) for g, v in self._grads_and_vars]),
-                **dict([(v.name + '_gradient_min', tf.reduce_min(g)) for g, v in self._grads_and_vars]),
-                **dict([(v.name + '_gradient_max', tf.reduce_max(g)) for g, v in self._grads_and_vars]),
-                **dict([(v.name + '_activation_mean', tf.reduce_mean(v)) for _, v in self._grads_and_vars]),
-                **dict([(v.name + '_activation_min', tf.reduce_min(v)) for _, v in self._grads_and_vars]),
-                **dict([(v.name + '_activation_max', tf.reduce_max(v)) for _, v in self._grads_and_vars]),
-                **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
-                **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
-                ),
+                    "actions": {
+                        **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
+                        **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
+                    },
+                    "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
+                    "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
+                    "histograms": {
+                        "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
+                        "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
+                    },
+                    "monitoring": {
+                        "cur_lr": tf.cast(self.cur_lr, tf.float64),
+                        "grad_gnorm": tf.global_norm(self._grads),
+                        "var_gnorm": tf.global_norm(self.var_list),
+                        "vf_explained_var": explained_variance(
+                            tf.reshape(self.loss.vtrace_returns.vs, [-1]),
+                            tf.reshape(make_time_major(values, drop_last=True), [-1])),
+                        "values_mean": values_mean,
+                        "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
+                        "vtrace_vs_mean": vtrace_vs_mean,
+                        **self.KL_stats,
+                    },
+                    "losses": {
+                        "total_loss": self.loss.total_loss,
+                        "policy_loss": self.loss.pi_loss,
+                        "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
+                        "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
+                        **influence_stats,
+                    },
+                }),
             }
 
     @override(TFPolicyGraph)
