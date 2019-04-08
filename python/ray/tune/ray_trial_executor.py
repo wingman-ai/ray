@@ -4,6 +4,7 @@ from __future__ import division
 from __future__ import print_function
 
 import logging
+import math
 import os
 import random
 import time
@@ -404,10 +405,9 @@ class RayTrialExecutor(TrialExecutor):
 
         can_overcommit = self._queue_trials
 
-        if (resources.cpu_total() > 0 and currently_available.cpu <= 0) or \
-           (resources.gpu_total() > 0 and currently_available.gpu <= 0) or \
-           any((resources.get_res_total(res_name) > 0
-                and currently_available.get(res_name) <= 0)
+        if (resources.cpu_total() > 0 >= currently_available.cpu) or \
+           (resources.gpu_total() > 0 >= currently_available.gpu) or \
+           any((resources.get_res_total(res_name) > 0 >= currently_available.get(res_name))
                for res_name in resources.custom_resources):
             can_overcommit = False  # requested resource is already saturated
 
@@ -470,17 +470,44 @@ class RayTrialExecutor(TrialExecutor):
         if storage == Checkpoint.MEMORY:
             trial._checkpoint.value = trial.runner.save_to_object.remote()
         else:
-            # If enabled, saves best checkpoints into a best folder
-            if trial.keep_best_checkpoints_num and trial.results_since_checkpoint_cnt > 0:
-                mean_rew_since_checkpoint = trial.results_since_checkpoint_sum / trial.results_since_checkpoint_cnt
-                if mean_rew_since_checkpoint > trial.best_checkpoint_reward:
-                    trial.best_checkpoint_reward = mean_rew_since_checkpoint
-                    self._checkpoint_and_erase("best", trial)
-                trial.results_since_checkpoint_sum, trial.results_since_checkpoint_cnt = 0, 0
-
-            self._checkpoint_and_erase("", trial)
+            # Keeps only highest performing checkpoints if enabled
+            if trial.keep_checkpoints_num:
+                try:
+                    last_attr_val = trial.last_result[
+                        trial.checkpoint_score_attr]
+                    if (trial.compare_checkpoints(last_attr_val)
+                            and not math.isnan(last_attr_val)):
+                        trial.best_checkpoint_attr_value = last_attr_val
+                        self._checkpoint_and_erase(trial)
+                except KeyError:
+                    logger.warning(
+                        "Result dict has no key: {}. keep"
+                        "_checkpoints_num flag will not work".format(
+                            trial.checkpoint_score_attr))
+            else:
+                with warn_if_slow("save_to_disk"):
+                    trial._checkpoint.value = ray.get(
+                        trial.runner.save.remote())
 
         return trial._checkpoint.value
+
+    @staticmethod
+    def _checkpoint_and_erase(trial):
+        """Checkpoints the model and erases old checkpoints
+            if needed.
+        Parameters
+        ----------
+            trial : trial to save
+        """
+
+        with warn_if_slow("save_to_disk"):
+            trial._checkpoint.value = ray.get(trial.runner.save.remote())
+
+        if len(trial.history) >= trial.keep_checkpoints_num:
+            ray.get(trial.runner.delete_checkpoint.remote(trial.history[-1]))
+            trial.history.pop()
+
+        trial.history.insert(0, trial._checkpoint.value)
 
     def _checkpoint_and_erase(self, subdir, trial):
         """Checkpoints the model and erases old checkpoints
