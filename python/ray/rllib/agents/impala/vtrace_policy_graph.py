@@ -376,17 +376,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
-                    "actions": {
-                        **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
-                        **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
-                    },
-                    "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
-                    "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
-                    "histograms": {
-                        "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
-                        "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
-                    },
-                    "monitoring": {
+                    "_monitoring": {
                         "cur_lr": tf.cast(self.cur_lr, tf.float64),
                         "grad_gnorm": tf.global_norm(self._grads),
                         "var_gnorm": tf.global_norm(self.var_list),
@@ -397,13 +387,21 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                         "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
                         "vtrace_vs_mean": vtrace_vs_mean,
                         **self.KL_stats,
+                        **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
+                        **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
                     },
-                    "losses": {
+                    "_losses": {
                         "total_loss": self.loss.total_loss,
                         "policy_loss": self.loss.pi_loss,
                         "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
                         "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
                         **influence_stats,
+                    },
+                    "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
+                    "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
+                    "histograms": {
+                        "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
+                        "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
                     },
                 }),
             }
