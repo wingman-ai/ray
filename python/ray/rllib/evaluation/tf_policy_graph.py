@@ -66,7 +66,8 @@ class TFPolicyGraph(PolicyGraph):
                  seq_lens=None,
                  max_seq_len=20,
                  batch_divisibility_req=1,
-                 update_ops=None):
+                 update_ops=None,
+                 values=None):
         """Initialize the policy graph.
 
         Arguments:
@@ -122,6 +123,7 @@ class TFPolicyGraph(PolicyGraph):
         self._seq_lens = seq_lens
         self._max_seq_len = max_seq_len
         self._batch_divisibility_req = batch_divisibility_req
+        self._values = values
 
         if self.model:
             self._loss = self.model.custom_loss(loss, self._loss_input_dict)
@@ -389,8 +391,8 @@ class TFPolicyGraph(PolicyGraph):
         builder.add_feed_dict({self._is_training: False})
         builder.add_feed_dict(dict(zip(self._state_inputs, state_batches)))
         fetches = builder.add_fetches([self._sampler] + self._state_outputs +
-                                      [self.extra_compute_action_fetches()])
-        return fetches[0], fetches[1:-1], fetches[-1]
+                                      [self.extra_compute_action_fetches()] + [self._values] + [self.model.language_inputs])
+        return fetches[0], fetches[1:-3], fetches[-3], fetches[-2], fetches[-1]
 
     def _build_compute_gradients(self, builder, postprocessed_batch):
         builder.add_feed_dict(self.extra_compute_grad_feed_dict())

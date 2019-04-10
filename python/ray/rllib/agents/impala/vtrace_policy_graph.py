@@ -310,7 +310,8 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 prev_reward_input=prev_rewards,
                 seq_lens=self.model.seq_lens,
                 max_seq_len=self.config["model"]["max_seq_len"],
-                batch_divisibility_req=self.config["sample_batch_size"])
+                batch_divisibility_req=self.config["sample_batch_size"],
+                values=values)
 
         with tf.name_scope('stats_fetches'):
             # KL divergence between worker and learner logits for debugging
