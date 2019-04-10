@@ -252,8 +252,11 @@ def run(run_or_experiment,
                 runner._trials[0].checkpoint_freq = experiment.spec['checkpoint_freq']
 
             if runner._trials[0].status == Trial.ERROR:
-                runner._trials[0].init_logger()
-                runner._try_recover(runner._trials[0], error_msg=None)
+                assert False, 'Trial in ERROR state, pls check'
+                # runner._trials[0].init_logger()
+                # runner._try_recover(runner._trials[0], error_msg=None)
+                runner._trials[0].status = Trial.PENDING
+                runner._trials[0].num_failures = 0
         except Exception:
             logger.exception("Runner restore failed. Restarting experiment.")
     else:
