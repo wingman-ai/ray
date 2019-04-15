@@ -384,6 +384,10 @@ class Agent(Trainable):
         with tf.Graph().as_default():
             self._init(self.config, self.env_creator)
 
+            graph = self.local_evaluator.policy_map[DEFAULT_POLICY_ID].sess.graph
+            writer = tf.summary.FileWriter(self._result_logger.logdir, graph)
+            writer.close()
+
     @override(Trainable)
     def _stop(self):
         # Call stop on all evaluators to release resources

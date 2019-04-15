@@ -4,8 +4,6 @@ from __future__ import print_function
 
 import time
 
-import tensorflow as tf
-
 from ray.rllib.agents.a3c.a3c_tf_policy_graph import A3CPolicyGraph
 from ray.rllib.agents.impala.vtrace_policy_graph import VTracePolicyGraph
 from ray.rllib.agents.agent import Agent, with_common_config
@@ -118,10 +116,6 @@ class ImpalaAgent(Agent):
         policy_cls = self._get_policy_graph()
         self.local_evaluator = self.make_local_evaluator(
             self.env_creator, policy_cls)
-
-        graph = self.local_evaluator.policy_map[DEFAULT_POLICY_ID].sess.graph
-        writer = tf.summary.FileWriter(self._result_logger.logdir, graph)
-        writer.close()
 
         if self.config["num_aggregation_workers"] > 0:
             # Create co-located aggregator actors first for placement pref
