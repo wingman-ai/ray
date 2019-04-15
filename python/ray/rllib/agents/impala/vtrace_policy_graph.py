@@ -376,6 +376,12 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
+                    '__important': {
+                        'lang_grads': tf.reduce_mean(tf.abs(self.lang_grads)),
+                        'visual_grads': tf.reduce_mean(tf.abs(self.visual_grads)),
+                        'position_grads': tf.reduce_mean(tf.abs(self.position_grads)),
+                        'rotation_grads': tf.reduce_mean(tf.abs(self.rotation_grads)),
+                    },
                     "_monitoring": {
                         "cur_lr": tf.cast(self.cur_lr, tf.float64),
                         "grad_gnorm": tf.global_norm(self._grads),
@@ -425,14 +431,29 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
     @override(TFPolicyGraph)
     def gradients(self, optimizer, loss):
-        grads = tf.gradients(loss, self.var_list)
+        grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs,
+                                                    self.model.position_inputs, self.model.rotation_inputs])
+
+        self.lang_grads = grads[-4]
+        self.visual_grads = grads[-3]
+        self.position_grads = grads[-2]
+        self.rotation_grads = grads[-1]
+        grads = grads[:-4]
+
         self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
+
+        for i in range(2, 8):
+            self.grads[i] = self.grads[i] * 1
+
         clipped_grads = list(zip(self.grads, self.var_list))
         return clipped_grads
 
     @override(TFPolicyGraph)
     def extra_compute_grad_fetches(self):
         return self.stats_fetches
+        # return {'__important': {'lang_grads': tf.reduce_mean(self.lang_grads)}, **self.stats_fetches}
+        # return {'__important': {'lang_grads': tf.reduce_mean(self.lang_grads)}}
+
 
     @override(PolicyGraph)
     def get_initial_state(self):
