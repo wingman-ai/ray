@@ -51,6 +51,9 @@ CLUSTER_CONFIG_SCHEMA = {
     # The number of workers to launch initially, in addition to the head node.
     "initial_workers": (int, OPTIONAL),
 
+    # The mode of the autoscaler e.g. default, aggressive
+    "autoscaling_mode": (str, OPTIONAL),
+
     # The autoscaler will scale up the cluster to this target fraction of
     # resources usage. For example, if a cluster of 8 nodes is 100% busy
     # and target_utilization was 0.8, it would resize the cluster to 10.
@@ -519,9 +522,13 @@ class StandardAutoscaler(object):
         ideal_num_nodes = int(np.ceil(cur_used / float(target_frac)))
         ideal_num_workers = ideal_num_nodes - 1  # subtract 1 for head node
 
+        initial_workers = self.config["initial_workers"]
+        aggressive = self.config["autoscaling_mode"] == "aggressive"
         if self.bringup:
-            ideal_num_workers = max(ideal_num_workers,
-                                    self.config["initial_workers"])
+            ideal_num_workers = max(ideal_num_workers, initial_workers)
+        elif aggressive and cur_used > 0:
+            # If we want any workers, we want at least initial_workers
+            ideal_num_workers = max(ideal_num_workers, initial_workers)
 
         return min(self.config["max_workers"],
                    max(self.config["min_workers"], ideal_num_workers))
@@ -582,7 +589,7 @@ class StandardAutoscaler(object):
         if successful_updated and self.config.get("restart_only", False):
             init_commands = self.config["worker_start_ray_commands"]
         elif successful_updated and self.config.get("no_restart", False):
-            init_commands = (self.config["worker_setup_commands"])
+            init_commands = self.config["worker_setup_commands"]
         else:
             init_commands = (self.config["worker_setup_commands"] +
                              self.config["worker_start_ray_commands"])
@@ -623,9 +630,8 @@ class StandardAutoscaler(object):
         self.launch_queue.put((config, count))
 
     def workers(self):
-        return self.provider.non_terminated_nodes(tag_filters={
-            TAG_RAY_NODE_TYPE: "worker"
-        })
+        return self.provider.non_terminated_nodes(
+            tag_filters={TAG_RAY_NODE_TYPE: "worker"})
 
     def log_info_string(self, nodes):
         logger.info("StandardAutoscaler: {}".format(self.info_string(nodes)))
@@ -713,10 +719,10 @@ def fillout_defaults(config):
 
 
 def merge_setup_commands(config):
-    config["head_setup_commands"] = config["setup_commands"] + \
-        config["head_setup_commands"]
-    config["worker_setup_commands"] = config["setup_commands"] + \
-        config["worker_setup_commands"]
+    config["head_setup_commands"] = (
+        config["setup_commands"] + config["head_setup_commands"])
+    config["worker_setup_commands"] = (
+        config["setup_commands"] + config["worker_setup_commands"])
     return config
 
 
@@ -747,7 +753,7 @@ def hash_runtime_conf(file_mounts, extra_objs):
     def add_content_hashes(path):
         def add_hash_of_file(fpath):
             with open(fpath, "rb") as f:
-                for chunk in iter(lambda: f.read(2**20), b''):
+                for chunk in iter(lambda: f.read(2**20), b""):
                     hasher.update(chunk)
 
         path = os.path.expanduser(path)
