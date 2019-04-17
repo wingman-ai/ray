@@ -10,6 +10,7 @@ import pickle
 import six
 import tempfile
 import tensorflow as tf
+from tensorflow.python import debug as tf_debug
 from types import FunctionType
 
 import ray
@@ -678,8 +679,14 @@ class Agent(Trainable):
         def session_creator():
             logger.debug("Creating TF session {}".format(
                 config["tf_session_args"]))
-            return tf.Session(
+
+            sess = tf.Session(
                 config=tf.ConfigProto(**config["tf_session_args"]))
+
+            # if worker_index == 0:
+            #     sess = tf_debug.TensorBoardDebugWrapperSession(sess, 'localhost:7000')
+
+            return sess
 
         if isinstance(config["input"], FunctionType):
             input_creator = config["input"]
