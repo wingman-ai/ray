@@ -376,13 +376,13 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
-                    '__important': {
+                    '0_important': {
                         'lang_grads': tf.reduce_mean(tf.abs(self.lang_grads)),
                         'visual_grads': tf.reduce_mean(tf.abs(self.visual_grads)),
-                        'position_grads': tf.reduce_mean(tf.abs(self.position_grads)),
-                        'rotation_grads': tf.reduce_mean(tf.abs(self.rotation_grads)),
+                        # 'position_grads': tf.reduce_mean(tf.abs(self.position_grads)),
+                        # 'rotation_grads': tf.reduce_mean(tf.abs(self.rotation_grads)),
                     },
-                    "_monitoring": {
+                    "1_monitoring": {
                         "cur_lr": tf.cast(self.cur_lr, tf.float64),
                         "grad_gnorm": tf.global_norm(self._grads),
                         "var_gnorm": tf.global_norm(self.var_list),
@@ -396,21 +396,40 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                         **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
                         **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
                     },
-                    "_losses": {
+                    "2_losses": {
                         "total_loss": self.loss.total_loss,
                         "policy_loss": self.loss.pi_loss,
                         "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
                         "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
                         **influence_stats,
                     },
+                    "3_grad_gnorms": {
+                        **dict([(f'{self.get_layer_name(vs[0])}', tf.global_norm(gs)) for gs, vs in
+                                zip(
+                                    zip(self.original_grads[0::2], self.original_grads[1::2]),
+                                    zip(self.var_list[0::2], self.var_list[1::2]))]),
+                        **dict([(f'{self.get_layer_name(vs[0])}_clip', tf.global_norm(gs)) for gs, vs in
+                                zip(
+                                    zip(self.grads[0::2], self.grads[1::2]),
+                                    zip(self.var_list[0::2], self.var_list[1::2]))]),
+                    },
+                    "4_var_gnorms": {
+                        '_visual_dense_out': tf.global_norm([self.model.visual_dense_out]),
+                        '_language_dense_out': tf.global_norm([self.model.language_dense_out]),
+                        **dict([(f'{self.get_layer_name(vs[0])}', tf.global_norm(vs)) for vs in
+                                zip(self.var_list[0::2], self.var_list[1::2])]),
+                    },
                     "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
                     "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
-                    "histograms": {
-                        "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
-                        "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
-                    },
+                    # "histograms": {
+                    #     "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
+                    #     "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
+                    # },
                 }),
             }
+
+    def get_layer_name(self, var):
+        return var.name.rsplit('/', 1)[0]
 
     @override(TFPolicyGraph)
     def copy(self, existing_inputs):
@@ -433,6 +452,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
     def gradients(self, optimizer, loss):
         grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs,
                                                     self.model.position_inputs, self.model.rotation_inputs])
+        self.original_grads = grads
 
         self.lang_grads = grads[-4]
         self.visual_grads = grads[-3]
@@ -440,10 +460,25 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         self.rotation_grads = grads[-1]
         grads = grads[:-4]
 
-        self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
+        if self.model.network_options['use_layer_wise_grad_clip']:
+            self.grads = []
+            for layer_grads, layer_vars in list(
+                    zip(zip(grads[0::2], grads[1::2]), zip(self.var_list[0::2], self.var_list[1::2]))):
 
-        for i in range(2, 8):
-            self.grads[i] = self.grads[i] * 1
+                grad_clip = self.model.network_options['other_grad_clip']
+                if 'conv2d' in layer_grads[0].name:
+                    grad_clip = self.model.network_options['conv2d_grad_clip']
+                elif 'visual_dense' in layer_grads[0].name:
+                    grad_clip = self.model.network_options['visual_dense_grad_clip']
+                elif 'language_dense' in layer_grads[0].name:
+                    grad_clip = self.model.network_options['language_dense_grad_clip']
+                elif 'fc_out' in layer_grads[0].name:
+                    grad_clip = self.model.network_options['fc_out_grad_clip']
+
+                self.grads.extend(tf.clip_by_global_norm(layer_grads, grad_clip)[0])
+        else:
+            # self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
+            self.grads, _ = tf.clip_by_global_norm(grads, self.model.network_options['other_grad_clip'])
 
         clipped_grads = list(zip(self.grads, self.var_list))
         return clipped_grads
