@@ -298,7 +298,8 @@ class PPOPolicyGraph(LearningRateSchedule, PPOPostprocessing, TFPolicyGraph):
             prev_action_input=prev_actions_ph,
             prev_reward_input=prev_rewards_ph,
             seq_lens=self.model.seq_lens,
-            max_seq_len=config["model"]["max_seq_len"])
+            max_seq_len=config["model"]["max_seq_len"],
+            values=self.value_function)
 
         self.sess.run(tf.global_variables_initializer())
         self.explained_variance = explained_variance(value_targets_ph,
