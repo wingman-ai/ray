@@ -19,7 +19,7 @@ matrix:
     - "./ci/travis/test-wheels.sh"
 
 before_deploy:
-    - export DIR=$(if [ "$TRAVIS_BRANCH" == "all-changes" ]; then echo "$TRAVIS_COMMIT"; else echo $TRAVIS_BRANCH; fi)
+    - export DIR=$(if [ "$TRAVIS_BRANCH" == "master" ]; then echo "$TRAVIS_COMMIT"; else echo $TRAVIS_BRANCH; fi)
     - echo "BRANCH=$TRAVIS_BRANCH, DIR=$DIR"
 deploy:
 - provider: s3
@@ -37,7 +37,7 @@ deploy:
   on:
     repo: wingman-ai/ray
     all_branches: true
-    condition: $TRAVIS_BRANCH != "all-changes"
+    condition: $TRAVIS_BRANCH != "master"
 - provider: s3
   access_key_id: *aws_key
   secret_access_key: *aws_secret
@@ -51,7 +51,7 @@ deploy:
   on: &master_deploy
     repo: wingman-ai/ray
     all_branches: true
-    condition: $TRAVIS_BRANCH == "all-changes"
+    condition: $TRAVIS_BRANCH == "master"
 - provider: s3
   access_key_id: *aws_key
   secret_access_key: *aws_secret
