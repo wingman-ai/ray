@@ -1,211 +1,65 @@
 language: generic
 
+
+services:
+- docker
+
 matrix:
   include:
-    - os: linux
-      env: PYTHON=2.7 PYTHONWARNINGS=ignore
+  - os: linux
+    env: LINUX_WHEELS=1 PYTHONWARNINGS=ignore
+    install:
+    - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
+    - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
+    - "./ci/suppress_output ./ci/travis/install-dependencies.sh"
+    - "./ci/suppress_output docker run --rm -w /ray -v `pwd`:/ray -ti rayproject/arrow_linux_x86_64_base:latest
+      /ray/python/build-wheel-manylinux1.sh"
+    script:
+    - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
+    - "./ci/travis/test-wheels.sh"
 
-    - os: linux
-      env: PYTHON=3.5 PYTHONWARNINGS=ignore
-
-    - os: osx
-      osx_image: xcode7
-      env: PYTHON=2.7 PYTHONWARNINGS=ignore
-
-    - os: osx
-      osx_image: xcode7
-      env: PYTHON=3.5 PYTHONWARNINGS=ignore
-
-    - os: linux
-      env:
-        - JDK='Oracle JDK 8'
-        - PYTHON=3.5 PYTHONWARNINGS=ignore
-        - RAY_INSTALL_JAVA=1
-      install:
-        - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
-        - if [ $RAY_CI_JAVA_AFFECTED != "1" ]; then exit; fi
-        - ./ci/suppress_output ./ci/travis/install-bazel.sh
-        - ./ci/suppress_output ./ci/travis/install-dependencies.sh
-        - export PATH="$HOME/miniconda/bin:$PATH"
-        - ./ci/suppress_output ./ci/travis/install-ray.sh
-      script:
-        - if [ $RAY_CI_JAVA_AFFECTED != "1" ]; then exit; fi
-        - ./java/test.sh
-
-    - os: linux
-      env: LINT=1 PYTHONWARNINGS=ignore
-      before_install:
-        # In case we ever want to use a different version of clang-format:
-        #- wget -O - http://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-        #- echo "deb http://apt.llvm.org/trusty/ llvm-toolchain-trusty main" | sudo tee -a /etc/apt/sources.list > /dev/null
-        - sudo apt-get update -qq
-        - sudo apt-get install -qq clang-format-3.8
-      install: []
-      script:
-        - ./ci/travis/check-git-clang-format-output.sh
-        # Try generating Sphinx documentation. To do this, we need to install
-        # Ray first.
-        - ./ci/travis/install-dependencies.sh
-        - export PATH="$HOME/miniconda/bin:$PATH"
-        - cd doc
-        - pip install -q -r requirements-doc.txt
-        - pip install yapf==0.23.0
-        - sphinx-build -W -b html -d _build/doctrees source _build/html
-        - cd ..
-        # Run Python linting, ignore dict vs {} (C408), others are defaults
-        - flake8 --inline-quotes '"' --exclude=python/ray/core/generated/,doc/source/conf.py,python/ray/cloudpickle/ --ignore=C408,E121,E123,E126,E226,E24,E704,W503,W504,W605
-        - ./ci/travis/format.sh --all
-        # Make sure that the README is formatted properly.
-        - cd python
-        - python setup.py check --restructuredtext --strict --metadata
-        - cd ..
-        # Run Bazel linter Buildifier.
-        - wget https://dl.google.com/go/go1.11.linux-amd64.tar.gz
-        - tar -xf go1.11.linux-amd64.tar.gz
-        - mkdir $HOME/go_dir
-        - export GOROOT=`pwd`/go
-        - export GOPATH="$HOME/go_dir"
-        - export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
-        - go get github.com/bazelbuild/buildtools/buildifier
-        - ./ci/travis/bazel-format.sh
-
-    - os: linux
-      env: VALGRIND=1 PYTHON=2.7 PYTHONWARNINGS=ignore
-      before_install:
-        - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
-        - if [ $RAY_CI_PYTHON_AFFECTED != "1" ]; then exit; fi
-
-        - sudo apt-get update -qq
-        - sudo apt-get install -qq valgrind
-      install:
-        - if [ $RAY_CI_PYTHON_AFFECTED != "1" ]; then exit; fi
-
-        - ./ci/suppress_output ./ci/travis/install-bazel.sh
-        - ./ci/suppress_output ./ci/travis/install-dependencies.sh
-        - export PATH="$HOME/miniconda/bin:$PATH"
-        - ./ci/suppress_output ./ci/travis/install-ray.sh
-
-      script:
-        - if [ $RAY_CI_PYTHON_AFFECTED != "1" ]; then exit; fi
-
-        - bash src/ray/test/run_object_manager_valgrind.sh
-
-        - export RAY_PLASMA_STORE_VALGRIND=1
-        # - export RAY_RAYLET_VALGRIND=1
-        # - export RAY_RAYLET_MONITOR_VALGRIND=1
-        # - export RAY_REDIS_SERVER_VALGRIND=1
-
-        # # Python3.5+ only. Otherwise we will get `SyntaxError` regardless of how we set the tester.
-        - python -c 'import sys;exit(sys.version_info>=(3,5))' || python -m pytest -v --durations=5 python/ray/experimental/test/async_test.py
-        - python -m pytest -v --durations=5 --timeout=300 python/ray/tests/test_mini.py
-        - python -m pytest -v --durations=5 --timeout=300 python/ray/tests/test_array.py
-        - python -m pytest -v --durations=5 --timeout=300 python/ray/tests/test_multi_node_2.py
-        - python -m pytest -v --durations=5 --timeout=300 python/ray/tests/test_node_manager.py
-
-    # Build Linux wheels.
-    - os: linux
-      env: LINUX_WHEELS=1 PYTHONWARNINGS=ignore
-      install:
-        - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
-        - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
-        - ./ci/suppress_output ./ci/travis/install-dependencies.sh
-
-        # This command should be kept in sync with ray/python/README-building-wheels.md.
-        - ./ci/suppress_output docker run --rm -w /ray -v `pwd`:/ray -ti rayproject/arrow_linux_x86_64_base:latest /ray/python/build-wheel-manylinux1.sh
-      script:
-        - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
-
-        - ./ci/travis/test-wheels.sh
-
-    # Build MacOS wheels.
-    - os: osx
-      osx_image: xcode7
-      env: MAC_WHEELS=1 PYTHONWARNINGS=ignore
-      install:
-        - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
-        - if [ $RAY_CI_MACOS_WHEELS_AFFECTED != "1" ]; then exit; fi
-
-        - ./ci/suppress_output ./ci/travis/install-dependencies.sh
-        # This command should be kept in sync with ray/python/README-building-wheels.md.
-        - ./python/build-wheel-macos.sh
-      script:
-        - if [ $RAY_CI_MACOS_WHEELS_AFFECTED != "1" ]; then exit; fi
-
-        - ./ci/travis/test-wheels.sh
-
-install:
-  - eval `python $TRAVIS_BUILD_DIR/ci/travis/determine_tests_to_run.py`
-  - if [ $RAY_CI_TUNE_AFFECTED != "1" ] && [ $RAY_CI_RLLIB_AFFECTED != "1" ] && [ $RAY_CI_PYTHON_AFFECTED != "1" ]; then exit; fi
-
-  - ./ci/suppress_output ./ci/travis/install-bazel.sh
-  - ./ci/suppress_output ./ci/travis/install-dependencies.sh
-  - export PATH="$HOME/miniconda/bin:$PATH"
-  - ./ci/suppress_output ./ci/travis/install-ray.sh
-  - ./ci/suppress_output ./ci/travis/install-cython-examples.sh
-
-  - ./ci/suppress_output bash src/ray/test/run_gcs_tests.sh
-  # stats test.
-  - ./ci/suppress_output bazel build //:stats_test -c opt
-  - ./bazel-bin/stats_test
-
-  # Raylet tests.
-  - ./ci/suppress_output bash src/ray/test/run_object_manager_tests.sh
-  - ./ci/suppress_output bazel test --build_tests_only --test_lang_filters=cc //:all
-  # Shutdown bazel to release the memory held by bazel.
-  - bazel shutdown
-
-script:
-  - export PATH="$HOME/miniconda/bin:$PATH"
-  # The following is needed so cloudpickle can find some of the
-  # class definitions: The main module of tests that are run
-  # with pytest have the same name as the test file -- and this
-  # module is only found if the test directory is in the PYTHONPATH.
-  # - export PYTHONPATH="$PYTHONPATH:./ci/"
-
-  # ray tune tests
-  - if [ $RAY_CI_TUNE_AFFECTED == "1" ]; then ./ci/suppress_output python python/ray/tune/tests/test_dependency.py; fi
-  # `cluster_tests.py` runs on Jenkins, not Travis.
-  - if [ $RAY_CI_TUNE_AFFECTED == "1" ]; then python -m pytest --durations=10 --timeout=300 --ignore=python/ray/tune/tests/test_cluster.py --ignore=python/ray/tune/tests/test_actor_reuse.py python/ray/tune/tests; fi
-
-  # ray rllib tests
-  - if [ $RAY_CI_RLLIB_AFFECTED == "1" ]; then ./ci/suppress_output python python/ray/rllib/tests/test_catalog.py; fi
-  - if [ $RAY_CI_RLLIB_AFFECTED == "1" ]; then ./ci/suppress_output python python/ray/rllib/tests/test_filters.py; fi
-  - if [ $RAY_CI_RLLIB_AFFECTED == "1" ]; then ./ci/suppress_output python python/ray/rllib/tests/test_optimizers.py; fi
-  - if [ $RAY_CI_RLLIB_AFFECTED == "1" ]; then ./ci/suppress_output python python/ray/rllib/tests/test_evaluators.py; fi
-
-  # ray tests
-  # Python3.5+ only. Otherwise we will get `SyntaxError` regardless of how we set the tester.
-  - if [ $RAY_CI_PYTHON_AFFECTED == "1" ]; then python -c 'import sys;exit(sys.version_info>=(3,5))' || python -m pytest -v --durations=5 --timeout=300 python/ray/experimental/test/async_test.py; fi
-  - if [ $RAY_CI_PYTHON_AFFECTED == "1" ]; then python -m pytest -v --durations=10 --timeout=300 python/ray/tests; fi
-
+before_deploy:
+    - export DIR=$(if [ "$TRAVIS_BRANCH" == "all-changes" ]; then echo "$TRAVIS_COMMIT"; else echo $TRAVIS_BRANCH; fi)
+    - echo "BRANCH=$TRAVIS_BRANCH, DIR=$DIR"
 deploy:
-  - provider: s3
-    access_key_id: AKIAJ2L7XDUSZVTXI5QA
-    secret_access_key:
-      secure: OS9V8c/fQ9SIOP+Lg2MIz+PtCSKNQVB3mubscDRHKJcCmOp3cB6AKsC/yepbNZvvjDD/ncW2v6KJVsUEneAeDKrZQWSIpNb34yGAvWb7g4xleLxiadNtx6XEzjWaOcg+Y6409e68XeoHq/5ItopWNQ9p9NHXgsoHbZaOurPyHNskNgwBVaObCy+cCak7ifkITDk6cil0OJYnTbOe3NhcU82Fh5BZzS2+G2qNq8tGNcbfINhq0rruWIBuV5WRB/14CmBR+mou74qFSiiodH/MKbOcplx9+BxoOsTnkl7SeyybcK6DX6jxJCuhSBIjct9uT8Qdovv6mzOMkXvLkLKFkHfkTJSGBRIIZEvkPvzhlEriqTcr4tX/MV8HKs/Acz1NnlD0tNEygOr3VaiSLB0dvpz4iCeI9berqSu/jV1VI1X5iVNfChYbOMQ+OYafJMs5WdO60AMWIHy60U511FjAlbS7IubXBjfhoCItIB1xlVNI7FfKaRbNRwP5qvPenB8FUgZpv3UBg5OZDkeBXSNoLydr0w505p6s8Jqnz750TpVYI11fih5D0N3Ea57OwQr9r/rk+Z8aGeTpWj6hIgQiNkrIf2VZnWTApd+utJPw3X3txUEcnOtcdDnMsPuEIeMvIDrrFMRwzClqMNXq9MewU43wp7cCl67YmDBDKubl7Vs=
-    bucket: ray-wheels
-    acl: public_read
-    region: us-west-2
-    local_dir: .whl
-    upload-dir: $TRAVIS_COMMIT
-    skip_cleanup: true
-    only:
-      - master
-    on:
-      repo: ray-project/ray
-      condition: $LINUX_WHEELS = 1 || $MAC_WHEELS = 1
-  - provider: s3
-    access_key_id: AKIAJ2L7XDUSZVTXI5QA
-    secret_access_key:
-      secure: OS9V8c/fQ9SIOP+Lg2MIz+PtCSKNQVB3mubscDRHKJcCmOp3cB6AKsC/yepbNZvvjDD/ncW2v6KJVsUEneAeDKrZQWSIpNb34yGAvWb7g4xleLxiadNtx6XEzjWaOcg+Y6409e68XeoHq/5ItopWNQ9p9NHXgsoHbZaOurPyHNskNgwBVaObCy+cCak7ifkITDk6cil0OJYnTbOe3NhcU82Fh5BZzS2+G2qNq8tGNcbfINhq0rruWIBuV5WRB/14CmBR+mou74qFSiiodH/MKbOcplx9+BxoOsTnkl7SeyybcK6DX6jxJCuhSBIjct9uT8Qdovv6mzOMkXvLkLKFkHfkTJSGBRIIZEvkPvzhlEriqTcr4tX/MV8HKs/Acz1NnlD0tNEygOr3VaiSLB0dvpz4iCeI9berqSu/jV1VI1X5iVNfChYbOMQ+OYafJMs5WdO60AMWIHy60U511FjAlbS7IubXBjfhoCItIB1xlVNI7FfKaRbNRwP5qvPenB8FUgZpv3UBg5OZDkeBXSNoLydr0w505p6s8Jqnz750TpVYI11fih5D0N3Ea57OwQr9r/rk+Z8aGeTpWj6hIgQiNkrIf2VZnWTApd+utJPw3X3txUEcnOtcdDnMsPuEIeMvIDrrFMRwzClqMNXq9MewU43wp7cCl67YmDBDKubl7Vs=
-    bucket: ray-wheels
-    acl: public_read
-    region: us-west-2
-    local_dir: .whl
-    upload-dir: latest
-    skip_cleanup: true
-    only:
-      - master
-    on:
-      repo: ray-project/ray
-      condition: $LINUX_WHEELS = 1 || $MAC_WHEELS = 1
+- provider: s3
+  access_key_id: &aws_key
+      secure: "gLghNBxN4PoskcHo28SeA3XchkOi9Xc2l2cvLteF8/JN2Peprp4JQm4/d/qhpyJc6uZzzpKqT2LLfdMl8Xquf9lPcuZWOZj7xOdzaNJyfPZQa3XgwND7pNTVBSTF+ubgbzXI7+c6aUQ2H1pqX8J2vsAy1cTukKZzV3/9KKAtvubRye0i9ZblJZihCEeY3jRCZhy7y0nw8x9mgJrdEiUFC9aKgvD1Uki9LnFqD3adk+zPTdo4+P0AekAekv4tGybrYJBI79M1q8kOXctTK11oNRU8mDVkuzppgvE6AFIV6mZ6ojjiSHS/JmXvOINW6XyWf9vEOgZkh4qh1jhl2ereNCu2OVvAR4LM9lPMa4W0dGPwMFdSqE+yATNi1Sbhq6Y4xbW/TyY6tFWhyL5oVyWLqZ29XOboVHJpEYq8myhXlVD7zwMwpUeDt2nrUIQGTMBmtg8oI7rHncD+sV0tW9Mp+KLu7MOAQS+752/apMssJrmKaVJjxYc0hKDo1AiflVjNDeF1kLlGpsHuC7tBaoA29/SkL1YjcOGt4/NW5Xi1yJNbDh56T9RpyIZB0EksuteesrRMy1Gy5EGkZGe3VbLqz96+PLg5dXkrfKTeVNIlQdIlw4jXg89xJSrQRuiumyCvzCuAhoPW7PBdI/HChbqrev5Xl9+v6vIgR1xFPkybwxs="
+  secret_access_key: &aws_secret
+      secure: "toBq7x6jSi2UHhdXoHOz3MzK/gl2kVbQR6nWHvoC1Falrn5lM/TeVH4dwFbl0Y1Bz0LH5vilqFZfPir351P8NbJuEnnRE5LaAM4FA3CfaSbIr897ZoM4IsmCLNGgOJutLXKAI1OhM3NS6vAua618U2MRweKc9XmOj0agLxzPuW9iJy6R40DJtRuHrGWGF5ZTNiRPRi1XXRDj0YDa0FrX0C34Rvcl13+viwY+JH0i47Yit3u8oMbUxL1ZbPVzVJonUWKJoLxsc3y0wA+qyKm8XEDfcnaXiHUUSbNCU/SfxSut+LR+ifWVwnvyewWAD+2a+kdU5IYsUhA3DrkLx2lRabIxvOn6R96zkiXSzs8lW3V55K2tz8CeFmcoZ9M/4YxvWBxOGABskveB0MUz48GZof4deKLgdLJp+P3TzYH/h4D/0FSaibYhvJq8pHVrCVYCGhZjJoalcYBozU9aPtUzKCLTi1/f7CJP2ki+XPzHh0Zvs0+sAnCHuBLqhUuZBuWFHY4ux3jCaPTBx+lR69zGuJWLBTcQh3RLipmYi86homHo1DnLD6CwwC4J1Dkt5Tt2laPK3HLSzRQTw5DP0p25vERNULAHcbb9mwg+wkqQcR5rBrmRwc3/2ZvNCgNanpFaRXJdNUIPgDZIrg0t1wR+TQJ6kDVSGexKf7L8wGLYspA="
+  bucket: public-wman
+  local-dir: .whl
+  upload-dir: ray/${DIR}
+  acl: public_read
+  skip_cleanup: true
+  file_glob: true
+  region: eu-west-1
+  on:
+    repo: wingman-ai/ray
+    all_branches: true
+    condition: $TRAVIS_BRANCH != "all-changes"
+- provider: s3
+  access_key_id: *aws_key
+  secret_access_key: *aws_secret
+  bucket: public-wman
+  local-dir: .whl
+  upload-dir: ray/master/${DIR}
+  acl: public_read
+  skip_cleanup: true
+  file_glob: true
+  region: eu-west-1
+  on: &master_deploy
+    repo: wingman-ai/ray
+    all_branches: true
+    condition: $TRAVIS_BRANCH == "all-changes"
+- provider: s3
+  access_key_id: *aws_key
+  secret_access_key: *aws_secret
+  bucket: public-wman
+  local-dir: .whl
+  upload-dir: ray/master/latest
+  acl: public_read
+  skip_cleanup: true
+  file_glob: true
+  region: eu-west-1
+  on: *master_deploy
