@@ -378,16 +378,8 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
-                    '0_important': {
-                        'lang_grads': tf.reduce_mean(tf.abs(self.lang_grads)),
-                        'visual_grads': tf.reduce_mean(tf.abs(self.visual_grads)),
-                        # 'position_grads': tf.reduce_mean(tf.abs(self.position_grads)),
-                        # 'rotation_grads': tf.reduce_mean(tf.abs(self.rotation_grads)),
-                    },
                     "1_monitoring": {
                         "cur_lr": tf.cast(self.cur_lr, tf.float64),
-                        "grad_gnorm": tf.global_norm(self._grads),
-                        "var_gnorm": tf.global_norm(self.var_list),
                         "vf_explained_var": explained_variance(
                             tf.reshape(self.loss.vtrace_returns.vs, [-1]),
                             tf.reshape(make_time_major(values, drop_last=True), [-1])),
@@ -395,8 +387,8 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                         "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
                         "vtrace_vs_mean": vtrace_vs_mean,
                         **self.KL_stats,
-                        **dict([(f'action_probs_min{i}', action_probs_min[i]) for i in range(len(action_probs_min))]),
-                        **dict([(f'action_probs_max{i}', action_probs_max[i]) for i in range(len(action_probs_max))]),
+                        **dict([(f"action_probs_min{i}", action_probs_min[i]) for i in range(len(action_probs_min))]),
+                        **dict([(f"action_probs_max{i}", action_probs_max[i]) for i in range(len(action_probs_max))]),
                     },
                     "2_losses": {
                         "total_loss": self.loss.total_loss,
@@ -406,18 +398,22 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                         **influence_stats,
                     },
                     "3_grad_gnorms": {
+                        "_grad_gnorm": tf.global_norm(self._grads),
+                        "_lang_grads_abs_mean": tf.reduce_mean(tf.abs(self.lang_grads)),
+                        "_visual_grads_abs_mean": tf.reduce_mean(tf.abs(self.visual_grads)),
                         **self.get_global_norms_by_layer(self.original_grads, self.var_list),
                         **self.get_global_norms_by_layer(self.grads, self.var_list, layer_name_suffix_to_append='_clip'),
                     },
                     "4_var_gnorms": {
+                        "_var_gnorm": tf.global_norm(self.var_list),
                         '_conv3_out': tf.global_norm([self.model.conv3]),
                         '_gamma_dense_out': tf.global_norm([self.model.gamma_dense_out]),
                         '_beta_dense_out': tf.global_norm([self.model.beta_dense_out]),
                         '_conv3_gamma_mult': tf.global_norm([self.model.conv3 * self.model.gamma_dense_out]),
                         **self.get_global_norms_by_layer(self.var_list, self.var_list),
                     },
-                    "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
-                    "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
+                    "5_activations_abs_max": dict([(f"{v.name}", tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
+                    "6_gradients_abs_max": dict([(f"{v.name}", tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
                     # "histograms": {
                     #     "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
                     #     "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
@@ -458,36 +454,15 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
     @override(TFPolicyGraph)
     def gradients(self, optimizer, loss):
-        grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs,
-                                                    self.model.position_inputs, self.model.rotation_inputs])
+        grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs])
 
-        self.lang_grads = grads[-4]
-        self.visual_grads = grads[-3]
-        self.position_grads = grads[-2]
-        self.rotation_grads = grads[-1]
+        self.lang_grads = grads[-2]
+        self.visual_grads = grads[-1]
 
-        grads = grads[:-4]
+        grads = grads[:-2]
         self.original_grads = grads
 
-        if self.model.network_options['use_layer_wise_grad_clip']:
-            self.grads = []
-            for layer_grads, layer_vars in list(
-                    zip(zip(grads[0::2], grads[1::2]), zip(self.var_list[0::2], self.var_list[1::2]))):
-
-                grad_clip = self.model.network_options['other_grad_clip']
-                if 'conv2d' in layer_grads[0].name:
-                    grad_clip = self.model.network_options['conv2d_grad_clip']
-                elif 'visual_dense' in layer_grads[0].name:
-                    grad_clip = self.model.network_options['visual_dense_grad_clip']
-                elif 'language_dense' in layer_grads[0].name:
-                    grad_clip = self.model.network_options['language_dense_grad_clip']
-                elif 'fc_out' in layer_grads[0].name:
-                    grad_clip = self.model.network_options['fc_out_grad_clip']
-
-                self.grads.extend(tf.clip_by_global_norm(layer_grads, grad_clip)[0])
-        else:
-            # self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
-            self.grads, _ = tf.clip_by_global_norm(grads, self.model.network_options['other_grad_clip'])
+        self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
 
         clipped_grads = list(zip(self.grads, self.var_list))
         return clipped_grads
@@ -495,9 +470,6 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
     @override(TFPolicyGraph)
     def extra_compute_grad_fetches(self):
         return self.stats_fetches
-        # return {'__important': {'lang_grads': tf.reduce_mean(self.lang_grads)}, **self.stats_fetches}
-        # return {'__important': {'lang_grads': tf.reduce_mean(self.lang_grads)}}
-
 
     @override(PolicyGraph)
     def get_initial_state(self):
