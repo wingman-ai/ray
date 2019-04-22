@@ -6,6 +6,7 @@ import gym
 import logging
 import pickle
 import tensorflow as tf
+from tensorboard.plugins.beholder import Beholder
 
 import ray
 from ray.rllib.env.atari_wrappers import wrap_deepmind, is_atari
@@ -242,6 +243,7 @@ class PolicyEvaluator(EvaluatorInterface):
         self.preprocessing_enabled = True
         self.last_batch = None
         self._fake_sampler = _fake_sampler
+        self._beholder = None
 
         self.env = _validate_env(env_creator(env_context))
         if isinstance(self.env, MultiAgentEnv) or \
@@ -561,8 +563,14 @@ class PolicyEvaluator(EvaluatorInterface):
                     info_out[pid], _ = (
                         self.policy_map[pid].learn_on_batch(batch))
         else:
-            info_out, _ = (
+            info_out, _, beholder_arrays = (
                 self.policy_map[DEFAULT_POLICY_ID].learn_on_batch(samples))
+
+            # if self._beholder == None:
+            #     self._beholder = Beholder(self.io_context.log_dir)
+            #
+            # self._beholder.update(self.tf_sess, beholder_arrays)
+
         if log_once("learn_out"):
             logger.info("Training output:\n\n{}\n".format(summarize(info_out)))
         return info_out
