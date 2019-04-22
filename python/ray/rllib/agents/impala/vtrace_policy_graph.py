@@ -6,6 +6,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import itertools
+
 import gym
 import numpy as np
 import ray
@@ -404,20 +406,15 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                         **influence_stats,
                     },
                     "3_grad_gnorms": {
-                        **dict([(f'{self.get_layer_name(vs[0])}', tf.global_norm(gs)) for gs, vs in
-                                zip(
-                                    zip(self.original_grads[0::2], self.original_grads[1::2]),
-                                    zip(self.var_list[0::2], self.var_list[1::2]))]),
-                        **dict([(f'{self.get_layer_name(vs[0])}_clip', tf.global_norm(gs)) for gs, vs in
-                                zip(
-                                    zip(self.grads[0::2], self.grads[1::2]),
-                                    zip(self.var_list[0::2], self.var_list[1::2]))]),
+                        **self.get_global_norms_by_layer(self.original_grads, self.var_list),
+                        **self.get_global_norms_by_layer(self.grads, self.var_list, layer_name_suffix_to_append='_clip'),
                     },
                     "4_var_gnorms": {
-                        '_visual_dense_out': tf.global_norm([self.model.visual_dense_out]),
-                        '_language_dense_out': tf.global_norm([self.model.language_dense_out]),
-                        **dict([(f'{self.get_layer_name(vs[0])}', tf.global_norm(vs)) for vs in
-                                zip(self.var_list[0::2], self.var_list[1::2])]),
+                        '_conv3_out': tf.global_norm([self.model.conv3]),
+                        '_gamma_dense_out': tf.global_norm([self.model.gamma_dense_out]),
+                        '_beta_dense_out': tf.global_norm([self.model.beta_dense_out]),
+                        '_conv3_gamma_mult': tf.global_norm([self.model.conv3 * self.model.gamma_dense_out]),
+                        **self.get_global_norms_by_layer(self.var_list, self.var_list),
                     },
                     "activations_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
                     "gradients_abs_max": dict([(f'{v.name}', tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
@@ -427,6 +424,17 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                     # },
                 }),
             }
+
+    def get_global_norms_by_layer(self, tensors, respective_vars, layer_name_suffix_to_append=''):
+        return {f'{k}{layer_name_suffix_to_append}': tf.global_norm(v) for k, v in
+                self.group_tensors_by_layer_name(tensors, respective_vars).items()}
+
+    def group_tensors_by_layer_name(self, tensors_to_group, respective_vars):
+        group = {}
+        for layer_name, layer_tensors in itertools.groupby(zip(tensors_to_group, respective_vars),
+                                                           key=lambda e: self.get_layer_name(e[1])):
+            group[layer_name] = list(map(lambda e: e[0], layer_tensors))
+        return group
 
     def get_layer_name(self, var):
         return var.name.rsplit('/', 1)[0]
@@ -452,13 +460,14 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
     def gradients(self, optimizer, loss):
         grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs,
                                                     self.model.position_inputs, self.model.rotation_inputs])
-        self.original_grads = grads
 
         self.lang_grads = grads[-4]
         self.visual_grads = grads[-3]
         self.position_grads = grads[-2]
         self.rotation_grads = grads[-1]
+
         grads = grads[:-4]
+        self.original_grads = grads
 
         if self.model.network_options['use_layer_wise_grad_clip']:
             self.grads = []
