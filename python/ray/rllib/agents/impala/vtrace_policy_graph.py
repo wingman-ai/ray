@@ -454,16 +454,11 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
 
     @override(TFPolicyGraph)
     def gradients(self, optimizer, loss):
-        grads = tf.gradients(loss, self.var_list + [self.model.language_inputs, self.model.visual_inputs])
+        grads = tf.gradients(loss, self.var_list)
+        return self._clip_grads(grads)
 
-        self.lang_grads = grads[-2]
-        self.visual_grads = grads[-1]
-
-        grads = grads[:-2]
-        self.original_grads = grads
-
+    def _clip_grads(self, grads):
         self.grads, _ = tf.clip_by_global_norm(grads, self.config["grad_clip"])
-
         clipped_grads = list(zip(self.grads, self.var_list))
         return clipped_grads
 
