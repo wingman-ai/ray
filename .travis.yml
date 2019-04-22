@@ -18,9 +18,6 @@ matrix:
     - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
     - "./ci/travis/test-wheels.sh"
 
-before_deploy:
-    - export DIR=$(if [ "$TRAVIS_BRANCH" == "master" ]; then echo "$TRAVIS_COMMIT"; else echo $TRAVIS_BRANCH; fi)
-    - echo "BRANCH=$TRAVIS_BRANCH, DIR=$DIR"
 deploy:
 - provider: s3
   access_key_id: &aws_key
@@ -29,7 +26,21 @@ deploy:
       secure: "toBq7x6jSi2UHhdXoHOz3MzK/gl2kVbQR6nWHvoC1Falrn5lM/TeVH4dwFbl0Y1Bz0LH5vilqFZfPir351P8NbJuEnnRE5LaAM4FA3CfaSbIr897ZoM4IsmCLNGgOJutLXKAI1OhM3NS6vAua618U2MRweKc9XmOj0agLxzPuW9iJy6R40DJtRuHrGWGF5ZTNiRPRi1XXRDj0YDa0FrX0C34Rvcl13+viwY+JH0i47Yit3u8oMbUxL1ZbPVzVJonUWKJoLxsc3y0wA+qyKm8XEDfcnaXiHUUSbNCU/SfxSut+LR+ifWVwnvyewWAD+2a+kdU5IYsUhA3DrkLx2lRabIxvOn6R96zkiXSzs8lW3V55K2tz8CeFmcoZ9M/4YxvWBxOGABskveB0MUz48GZof4deKLgdLJp+P3TzYH/h4D/0FSaibYhvJq8pHVrCVYCGhZjJoalcYBozU9aPtUzKCLTi1/f7CJP2ki+XPzHh0Zvs0+sAnCHuBLqhUuZBuWFHY4ux3jCaPTBx+lR69zGuJWLBTcQh3RLipmYi86homHo1DnLD6CwwC4J1Dkt5Tt2laPK3HLSzRQTw5DP0p25vERNULAHcbb9mwg+wkqQcR5rBrmRwc3/2ZvNCgNanpFaRXJdNUIPgDZIrg0t1wR+TQJ6kDVSGexKf7L8wGLYspA="
   bucket: public-wman
   local-dir: .whl
-  upload-dir: ray/${DIR}
+  upload-dir: ray/${TRAVIS_BRANCH}/${TRAVIS_COMMIT}
+  acl: public_read
+  skip_cleanup: true
+  file_glob: true
+  region: eu-west-1
+  on:
+    repo: wingman-ai/ray
+    branch: master
+
+- provider: s3
+  access_key_id: *aws_key
+  secret_access_key: *aws_secret
+  bucket: public-wman
+  local-dir: .whl
+  upload-dir: ray/${TRAVIS_BRANCH}/latest
   acl: public_read
   skip_cleanup: true
   file_glob: true
@@ -37,29 +48,4 @@ deploy:
   on:
     repo: wingman-ai/ray
     all_branches: true
-    condition: $TRAVIS_BRANCH != "master"
-- provider: s3
-  access_key_id: *aws_key
-  secret_access_key: *aws_secret
-  bucket: public-wman
-  local-dir: .whl
-  upload-dir: ray/master/${DIR}
-  acl: public_read
-  skip_cleanup: true
-  file_glob: true
-  region: eu-west-1
-  on: &master_deploy
-    repo: wingman-ai/ray
-    all_branches: true
-    condition: $TRAVIS_BRANCH == "master"
-- provider: s3
-  access_key_id: *aws_key
-  secret_access_key: *aws_secret
-  bucket: public-wman
-  local-dir: .whl
-  upload-dir: ray/master/latest
-  acl: public_read
-  skip_cleanup: true
-  file_glob: true
-  region: eu-west-1
-  on: *master_deploy
+
