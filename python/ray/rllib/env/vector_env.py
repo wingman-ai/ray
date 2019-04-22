@@ -107,7 +107,7 @@ class _VectorizedGymEnv(VectorEnv):
     def vector_step(self, actions):
         obs_batch, rew_batch, done_batch, info_batch = [], [], [], []
         for i in range(self.num_envs):
-            obs, r, done, info = self.envs[i].step(actions[i])
+            obs, r, done, info = self.envs[i].step(actions[i], state_value=0, language_input=0)
             if not np.isscalar(r) or not np.isreal(r) or not np.isfinite(r):
                 raise ValueError(
                     "Reward should be finite scalar, got {} ({})".format(
