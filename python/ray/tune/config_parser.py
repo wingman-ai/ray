@@ -104,19 +104,19 @@ def make_parser(parser_creator=None, **kwargs):
         help="Whether to checkpoint at the end of the experiment. "
         "Default is False.")
     parser.add_argument(
-        "--keep-best-checkpoints-num",
-        default=None,
-        type=int,
-        help="Number of highest reward checkpoints to keep. Default (None) "
-             "disables best checkpointing."
-    )
-    parser.add_argument(
         "--keep-checkpoints-num",
         default=None,
         type=int,
         help="Number of last checkpoints to keep. Others get "
-             "deleted. Default (None) keeps all checkpoints."
-    )
+        "deleted. Default (None) keeps all checkpoints.")
+    parser.add_argument(
+        "--checkpoint-score-attr",
+        default="training_iteration",
+        type=str,
+        help="Specifies by which attribute to rank the best checkpoint. "
+        "Default is increasing order. If attribute starts with min- it "
+        "will rank attribute in decreasing order. Example: "
+        "min-validation_loss")
     parser.add_argument(
         "--export-formats",
         default=None,
@@ -204,8 +204,8 @@ def create_trial_from_spec(spec, output_path, parser, **trial_kwargs):
         stopping_criterion=spec.get("stop", {}),
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_at_end=args.checkpoint_at_end,
-        keep_best_checkpoints_num=args.keep_best_checkpoints_num,
         keep_checkpoints_num=args.keep_checkpoints_num,
+        checkpoint_score_attr=args.checkpoint_score_attr,
         export_formats=spec.get("export_formats", []),
         # str(None) doesn't create None
         restore_path=spec.get("restore"),
