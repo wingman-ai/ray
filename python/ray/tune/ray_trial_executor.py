@@ -410,9 +410,10 @@ class RayTrialExecutor(TrialExecutor):
 
         can_overcommit = self._queue_trials
 
-        if (resources.cpu_total() > 0 >= currently_available.cpu) or \
-           (resources.gpu_total() > 0 >= currently_available.gpu) or \
-           any((resources.get_res_total(res_name) > 0 >= currently_available.get(res_name))
+        if (resources.cpu_total() > 0 and currently_available.cpu <= 0) or \
+           (resources.gpu_total() > 0 and currently_available.gpu <= 0) or \
+           any((resources.get_res_total(res_name) > 0
+                and currently_available.get(res_name) <= 0)
                for res_name in resources.custom_resources):
             can_overcommit = False  # requested resource is already saturated
 
