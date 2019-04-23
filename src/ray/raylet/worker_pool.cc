@@ -120,11 +120,6 @@ void WorkerPool::StartWorkerProcess(const Language &language) {
   for (auto const &token : state.worker_command) {
     worker_command_args.push_back(token.c_str());
   }
-
-  for (std::vector<const char *>::const_iterator i = worker_command_args.begin(); i != worker_command_args.end(); ++i)
-    RAY_LOG(DEBUG) << *i << ' ';
-  RAY_LOG(DEBUG) << '\n';
-
   worker_command_args.push_back(nullptr);
 
   pid_t pid = StartProcess(worker_command_args);
