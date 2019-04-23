@@ -85,10 +85,10 @@ class BaseEnv(object):
         """Wraps any env type as needed to expose the async interface."""
 
         from ray.rllib.env.remote_vector_env import RemoteVectorEnv
-        # if remote_envs and num_envs == 1:
-        #     raise ValueError(
-        #         "Remote envs only make sense to use if num_envs > 1 "
-        #         "(i.e. vectorization is enabled).")
+        if remote_envs and num_envs == 1:
+            raise ValueError(
+                "Remote envs only make sense to use if num_envs > 1 "
+                "(i.e. vectorization is enabled).")
 
         if not isinstance(env, BaseEnv):
             if isinstance(env, MultiAgentEnv):

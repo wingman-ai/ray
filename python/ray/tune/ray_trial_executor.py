@@ -472,7 +472,6 @@ class RayTrialExecutor(TrialExecutor):
         """Saves the trial's state to a checkpoint."""
         trial._checkpoint.storage = storage
         trial._checkpoint.last_result = trial.last_result
-
         if storage == Checkpoint.MEMORY:
             trial._checkpoint.value = trial.runner.save_to_object.remote()
         else:

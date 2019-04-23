@@ -7,7 +7,6 @@ import errno
 import logging
 import tensorflow as tf
 import numpy as np
-from tensorflow.python import debug as tf_debug
 
 import ray
 import ray.experimental.tf_utils
@@ -109,7 +108,6 @@ class TFPolicyGraph(PolicyGraph):
         self.action_space = action_space
         self.model = model
         self._sess = sess
-        self._debug_sess = None
         self._obs_input = obs_input
         self._prev_action_input = prev_action_input
         self._prev_reward_input = prev_reward_input
@@ -201,10 +199,10 @@ class TFPolicyGraph(PolicyGraph):
 
     @override(PolicyGraph)
     def learn_on_batch(self, postprocessed_batch):
-        # if self._debug_sess is None:
-        #     self._debug_sess = tf_debug.TensorBoardDebugWrapperSession(self._sess, 'localhost:7000')
+        return self._learn_on_batch(self._sess, postprocessed_batch)
 
-        builder = TFRunBuilder(self._sess, "learn_on_batch")
+    def _learn_on_batch(self, sess, postprocessed_batch):
+        builder = TFRunBuilder(sess, "learn_on_batch")
         fetches = self._build_learn_on_batch(builder, postprocessed_batch)
         return builder.get(fetches)
 
