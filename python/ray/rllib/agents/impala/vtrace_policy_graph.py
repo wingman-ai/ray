@@ -6,8 +6,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import itertools
-
 import gym
 import numpy as np
 import ray
@@ -198,8 +196,10 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         dist_inputs = unpacked_outputs if is_multidiscrete else \
             self.model.outputs
         action_dist = dist_class(dist_inputs)
+        self.action_dist = action_dist
 
         values = self.model.value_function()
+        self.state_values = values
         self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           tf.get_variable_scope().name)
 
@@ -251,13 +251,6 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         loss_actions = actions if is_multidiscrete else tf.expand_dims(
             actions, axis=1)
 
-        if isinstance(action_dist, MultiCategorical):
-            action_dist_inputs = list(map(lambda c: c.inputs, action_dist.cats))
-        elif isinstance(action_dist, Categorical):
-            action_dist_inputs = [action_dist.inputs]
-        else:
-            raise ValueError('Not supported action_dist distribution')
-
         # Inputs are reshaped from [B * T] => [T - 1, B] for V-trace calc.
         with tf.name_scope('vtrace_loss'):
             self.loss = VTraceLoss(
@@ -279,6 +272,29 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 entropy_coeff=self.config["entropy_coeff"],
                 clip_rho_threshold=self.config["vtrace_clip_rho_threshold"],
                 clip_pg_rho_threshold=self.config["vtrace_clip_pg_rho_threshold"])
+
+        with tf.name_scope('stats_fetches'):
+            # KL divergence between worker and learner logits for debugging
+            model_dist = MultiCategorical(unpacked_outputs)
+            behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
+
+            kls = model_dist.kl(behaviour_dist)
+            if len(kls) > 1:
+                self.KL_stats = {}
+
+                for i, kl in enumerate(kls):
+                    self.KL_stats.update({
+                        "mean_KL_{}".format(i): tf.reduce_mean(kl),
+                        "max_KL_{}".format(i): tf.reduce_max(kl),
+                        "median_KL_{}".format(i): tf.contrib.distributions.
+                            percentile(kl, 50.0),
+                    })
+            else:
+                self.KL_stats = {
+                    "mean_KL": tf.reduce_mean(kls[0]),
+                    "max_KL": tf.reduce_max(kls[0]),
+                    "median_KL": tf.contrib.distributions.percentile(kls[0], 50.0),
+                }
 
         # Initialize TFPolicyGraph
         loss_in = [
@@ -312,130 +328,24 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 prev_reward_input=prev_rewards,
                 seq_lens=self.model.seq_lens,
                 max_seq_len=self.config["model"]["max_seq_len"],
-                batch_divisibility_req=self.config["sample_batch_size"],
-                values=values)
+                batch_divisibility_req=self.config["sample_batch_size"])
+
+        self.sess.run(tf.global_variables_initializer())
 
         with tf.name_scope('stats_fetches'):
-            # KL divergence between worker and learner logits for debugging
-            model_dist = MultiCategorical(unpacked_outputs)
-            behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
-
-            kls = model_dist.kl(behaviour_dist)
-            if len(kls) > 1:
-                self.KL_stats = {}
-
-                for i, kl in enumerate(kls):
-                    self.KL_stats.update({
-                        "mean_KL_{}".format(i): tf.reduce_mean(kl),
-                        "max_KL_{}".format(i): tf.reduce_max(kl),
-                        "median_KL_{}".format(i): tf.contrib.distributions.
-                        percentile(kl, 50.0),
-                    })
-            else:
-                self.KL_stats = {
-                    "mean_KL": tf.reduce_mean(kls[0]),
-                    "max_KL": tf.reduce_max(kls[0]),
-                    "median_KL": tf.contrib.distributions.percentile(kls[0], 50.0),
-                }
-
-            action_probs = [tf.nn.softmax(adi, axis=1) for adi in action_dist_inputs]
-            action_probs_means = [tf.reduce_mean(ap, axis=0) for ap in action_probs]
-            action_probs_max = [tf.reduce_max(apm) for apm in action_probs_means]
-            action_probs_min = [tf.reduce_min(apm) for apm in action_probs_means]
-            values_mean = tf.reduce_mean(values)
-            vtrace_pg_advantages_mean = tf.reduce_mean(self.loss.vtrace_returns.pg_advantages)
-            vtrace_vs_mean = tf.reduce_mean(self.loss.vtrace_returns.vs)
-
-            pi_loss_abs = tf.abs(self.loss.pi_loss)
-            vf_loss_abs = tf.abs(self.loss.vf_loss * self.config["vf_loss_coeff"])
-            en_loss_abs = tf.abs(self.loss.entropy * self.config["entropy_coeff"])
-            total_influence_loss = pi_loss_abs + vf_loss_abs + en_loss_abs
-
-            if hasattr(self.model, 'lp_loss'):
-                lp_loss_abs = tf.abs(self.model.lp_loss)
-                total_influence_loss += lp_loss_abs
-            if hasattr(self.model, 'tae_loss'):
-                tae_loss_abs = tf.abs(self.model.tae_loss)
-                total_influence_loss += tae_loss_abs
-
-            influence_stats = {
-                "_influence_total_loss": total_influence_loss,
-                "_influence_policy_loss": pi_loss_abs / total_influence_loss,
-                "_influence_vf_loss": vf_loss_abs / total_influence_loss,
-                "_influence_entropy_loss": en_loss_abs / total_influence_loss,
-            }
-
-            if hasattr(self.model, 'lp_loss'):
-                influence_stats.update({
-                    "influence_lp_loss": lp_loss_abs / total_influence_loss,
-                })
-            if hasattr(self.model, 'tae_loss'):
-                influence_stats.update({
-                    "influence_tae_loss": tae_loss_abs / total_influence_loss,
-                })
-
-            self.sess.run(tf.global_variables_initializer())
-
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
-                    "1_monitoring": {
-                        "cur_lr": tf.cast(self.cur_lr, tf.float64),
-                        "vf_explained_var": explained_variance(
-                            tf.reshape(self.loss.vtrace_returns.vs, [-1]),
-                            tf.reshape(make_time_major(values, drop_last=True), [-1])),
-                        "values_mean": values_mean,
-                        "vtrace_pg_advantages_mean": vtrace_pg_advantages_mean,
-                        "vtrace_vs_mean": vtrace_vs_mean,
-                        **self.KL_stats,
-                        **dict([(f"action_probs_min{i}", action_probs_min[i]) for i in range(len(action_probs_min))]),
-                        **dict([(f"action_probs_max{i}", action_probs_max[i]) for i in range(len(action_probs_max))]),
-                    },
-                    "2_losses": {
-                        "total_loss": self.loss.total_loss,
-                        "policy_loss": self.loss.pi_loss,
-                        "vf_loss": self.loss.vf_loss * self.config["vf_loss_coeff"],
-                        "entropy_loss": self.loss.entropy * self.config["entropy_coeff"],
-                        **influence_stats,
-                    },
-                    "3_grad_gnorms": {
-                        "_grad_gnorm": tf.global_norm(self._grads),
-                        "_lang_grads_abs_mean": tf.reduce_mean(tf.abs(self.lang_grads)),
-                        "_visual_grads_abs_mean": tf.reduce_mean(tf.abs(self.visual_grads)),
-                        **self.get_global_norms_by_layer(self.original_grads, self.var_list),
-                        **self.get_global_norms_by_layer(self.grads, self.var_list, layer_name_suffix_to_append='_clip'),
-                    },
-                    "4_var_gnorms": {
-                        "_var_gnorm": tf.global_norm(self.var_list),
-                        '_conv3_out': tf.global_norm([self.model.conv3]),
-                        '_gamma_dense_out': tf.global_norm([self.model.gamma_dense_out]),
-                        '_beta_dense_out': tf.global_norm([self.model.beta_dense_out]),
-                        '_conv3_gamma_mult': tf.global_norm([self.model.conv3 * self.model.gamma_dense_out]),
-                        '_gamma_add': tf.global_norm([self.model.gamma_add]),
-                        '_bn': tf.global_norm([self.model.bn]),
-                        **self.get_global_norms_by_layer(self.var_list, self.var_list),
-                    },
-                    "5_activations_abs_max": dict([(f"{v.name}", tf.reduce_max(tf.math.abs(v))) for _, v in self._grads_and_vars]),
-                    "6_gradients_abs_max": dict([(f"{v.name}", tf.reduce_max(tf.math.abs(g))) for g, v in self._grads_and_vars]),
-                    # "histograms": {
-                    #     "activations": dict([(f'{v.name}', v) for _, v in self._grads_and_vars]),
-                    #     "gradients": dict([(f'{v.name}', g) for g, v in self._grads_and_vars]),
-                    # },
-                }),
+                    "cur_lr": tf.cast(self.cur_lr, tf.float64),
+                    "policy_loss": self.loss.pi_loss,
+                    "entropy": self.loss.entropy,
+                    "grad_gnorm": tf.global_norm(self._grads),
+                    "var_gnorm": tf.global_norm(self.var_list),
+                    "vf_loss": self.loss.vf_loss,
+                    "vf_explained_var": explained_variance(
+                        tf.reshape(self.loss.vtrace_returns.vs, [-1]),
+                        tf.reshape(make_time_major(values, drop_last=True), [-1])),
+                }, **self.KL_stats),
             }
-
-    def get_global_norms_by_layer(self, tensors, respective_vars, layer_name_suffix_to_append=''):
-        return {f'{k}{layer_name_suffix_to_append}': tf.global_norm(v) for k, v in
-                self.group_tensors_by_layer_name(tensors, respective_vars).items()}
-
-    def group_tensors_by_layer_name(self, tensors_to_group, respective_vars):
-        group = {}
-        for layer_name, layer_tensors in itertools.groupby(zip(tensors_to_group, respective_vars),
-                                                           key=lambda e: self.get_layer_name(e[1])):
-            group[layer_name] = list(map(lambda e: e[0], layer_tensors))
-        return group
-
-    def get_layer_name(self, var):
-        return var.name.rsplit('/', 1)[0]
 
     @override(TFPolicyGraph)
     def copy(self, existing_inputs):
