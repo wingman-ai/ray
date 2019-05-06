@@ -16,7 +16,7 @@ from ray.rllib.evaluation.policy_graph import PolicyGraph
 from ray.rllib.evaluation.sample_batch import SampleBatch
 from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph, \
     LearningRateSchedule
-from ray.rllib.models.action_dist import MultiCategorical, Categorical
+from ray.rllib.models.action_dist import MultiCategorical
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.error import UnsupportedSpaceException
@@ -199,7 +199,6 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         self.action_dist = action_dist
 
         values = self.model.value_function()
-        self.state_values = values
         self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           tf.get_variable_scope().name)
 
@@ -311,6 +310,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                                       self.config["lr_schedule"])
 
         with tf.name_scope('TFPolicyGraph.__init__'):
+            self.state_values = values
             TFPolicyGraph.__init__(
                 self,
                 observation_space,
