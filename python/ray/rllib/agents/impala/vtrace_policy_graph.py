@@ -7,8 +7,8 @@ from __future__ import division
 from __future__ import print_function
 
 import gym
-import numpy as np
 import ray
+import numpy as np
 import tensorflow as tf
 from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
@@ -273,7 +273,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 clip_rho_threshold=self.config["vtrace_clip_rho_threshold"],
                 clip_pg_rho_threshold=self.config["vtrace_clip_pg_rho_threshold"])
 
-        with tf.name_scope('stats_fetches'):
+        with tf.name_scope('kl_divergence'):
             # KL divergence between worker and learner logits for debugging
             model_dist = MultiCategorical(unpacked_outputs)
             behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
