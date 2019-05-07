@@ -156,6 +156,9 @@ class Worker(object):
         # increment every time when `ray.shutdown` is called.
         self._session_index = 0
         self._current_task = None
+        # Functions to run to process the values returned by ray.get. Each
+        # postprocessor must take two arguments ("object_ids", and "values").
+        self._post_get_hooks = []
 
     @property
     def connected(self):
@@ -234,9 +237,14 @@ class Worker(object):
         Returns:
             The serialization context of the given driver.
         """
-        if driver_id not in self.serialization_context_map:
-            _initialize_serialization(driver_id)
-        return self.serialization_context_map[driver_id]
+        # This function needs to be proctected by a lock, because it will be
+        # called by`register_class_for_serialization`, as well as the import
+        # thread, from different threads. Also, this function will recursively
+        # call itself, so we use RLock here.
+        with self.lock:
+            if driver_id not in self.serialization_context_map:
+                _initialize_serialization(driver_id)
+            return self.serialization_context_map[driver_id]
 
     def check_connected(self):
         """Check if the worker is connected.
@@ -428,11 +436,7 @@ class Worker(object):
                 # Wait a little bit for the import thread to import the class.
                 # If we currently have the worker lock, we need to release it
                 # so that the import thread can acquire it.
-                if self.mode == WORKER_MODE:
-                    self.lock.release()
                 time.sleep(0.01)
-                if self.mode == WORKER_MODE:
-                    self.lock.acquire()
 
                 if time.time() - start_time > error_timeout:
                     warning_message = ("This worker or driver is waiting to "
@@ -968,45 +972,37 @@ class Worker(object):
             driver_id, function_descriptor)
 
         # Execute the task.
-        # TODO(rkn): Consider acquiring this lock with a timeout and pushing a
-        # warning to the user if we are waiting too long to acquire the lock
-        # because that may indicate that the system is hanging, and it'd be
-        # good to know where the system is hanging.
-        with self.lock:
-            function_name = execution_info.function_name
-            extra_data = {
-                "name": function_name,
-                "task_id": task.task_id().hex()
-            }
-            if task.actor_id().is_nil():
-                if task.actor_creation_id().is_nil():
-                    title = "ray_worker:{}()".format(function_name)
-                    next_title = "ray_worker"
-                else:
-                    actor = self.actors[task.actor_creation_id()]
-                    title = "ray_{}:{}()".format(actor.__class__.__name__,
-                                                 function_name)
-                    next_title = "ray_{}".format(actor.__class__.__name__)
+        function_name = execution_info.function_name
+        extra_data = {"name": function_name, "task_id": task.task_id().hex()}
+        if task.actor_id().is_nil():
+            if task.actor_creation_id().is_nil():
+                title = "ray_worker:{}()".format(function_name)
+                next_title = "ray_worker"
             else:
-                actor = self.actors[task.actor_id()]
+                actor = self.actors[task.actor_creation_id()]
                 title = "ray_{}:{}()".format(actor.__class__.__name__,
                                              function_name)
                 next_title = "ray_{}".format(actor.__class__.__name__)
-            with profiling.profile("task", extra_data=extra_data):
-                with _changeproctitle(title, next_title):
-                    self._process_task(task, execution_info)
-                # Reset the state fields so the next task can run.
-                self.task_context.current_task_id = TaskID.nil()
-                self.task_context.task_index = 0
-                self.task_context.put_index = 1
-                if self.actor_id.is_nil():
-                    # Don't need to reset task_driver_id if the worker is an
-                    # actor. Because the following tasks should all have the
-                    # same driver id.
-                    self.task_driver_id = DriverID.nil()
-                    # Reset signal counters so that the next task can get
-                    # all past signals.
-                    ray_signal.reset()
+        else:
+            actor = self.actors[task.actor_id()]
+            title = "ray_{}:{}()".format(actor.__class__.__name__,
+                                         function_name)
+            next_title = "ray_{}".format(actor.__class__.__name__)
+        with profiling.profile("task", extra_data=extra_data):
+            with _changeproctitle(title, next_title):
+                self._process_task(task, execution_info)
+            # Reset the state fields so the next task can run.
+            self.task_context.current_task_id = TaskID.nil()
+            self.task_context.task_index = 0
+            self.task_context.put_index = 1
+            if self.actor_id.is_nil():
+                # Don't need to reset task_driver_id if the worker is an
+                # actor. Because the following tasks should all have the
+                # same driver id.
+                self.task_driver_id = DriverID.nil()
+                # Reset signal counters so that the next task can get
+                # all past signals.
+                ray_signal.reset()
 
         # Increase the task execution counter.
         self.function_actor_manager.increase_task_counter(
@@ -1102,7 +1098,7 @@ def get_webui_url():
     """
     if _global_node is None:
         raise Exception("Ray has not been initialized/connected.")
-    return _global_node.get_webui_url
+    return _global_node.webui_url
 
 
 global_worker = Worker()
@@ -1462,7 +1458,7 @@ def init(redis_address=None,
     return _global_node.address_info
 
 
-# Functions to run as callback after a successful ray init
+# Functions to run as callback after a successful ray init.
 _post_init_hooks = []
 
 
@@ -1500,7 +1496,10 @@ def shutdown(exiting_interpreter=False):
         _global_node.kill_all_processes(check_alive=False, allow_graceful=True)
         _global_node = None
 
+    # TODO(rkn): Instead of manually reseting some of the worker fields, we
+    # should simply set "global_worker" to equal "None" or something like that.
     global_worker.set_mode(None)
+    global_worker._post_get_hooks = []
 
 
 atexit.register(shutdown, True)
@@ -1645,10 +1644,9 @@ def listen_error_messages_raylet(worker, task_error_queue, threads_stopped):
 
     try:
         # Get the exports that occurred before the call to subscribe.
-        with worker.lock:
-            error_messages = global_state.error_messages(worker.task_driver_id)
-            for error_message in error_messages:
-                logger.error(error_message)
+        error_messages = global_state.error_messages(worker.task_driver_id)
+        for error_message in error_messages:
+            logger.error(error_message)
 
         while True:
             # Exit if we received a signal that we should stop.
@@ -1696,8 +1694,7 @@ def connect(node,
             mode=WORKER_MODE,
             log_to_driver=False,
             worker=global_worker,
-            driver_id=None,
-            load_code_from_local=False):
+            driver_id=None):
     """Connect this worker to the raylet, to Plasma, and to Redis.
 
     Args:
@@ -1774,7 +1771,7 @@ def connect(node,
                 traceback_str,
                 driver_id=None)
 
-    worker.lock = threading.Lock()
+    worker.lock = threading.RLock()
 
     # Create an object for interfacing with the global state.
     global_state._initialize_global_state(
@@ -2183,23 +2180,29 @@ def get(object_ids):
             # In LOCAL_MODE, ray.get is the identity operation (the input will
             # actually be a value not an objectid).
             return object_ids
+
+        is_individual_id = isinstance(object_ids, ray.ObjectID)
+        if is_individual_id:
+            object_ids = [object_ids]
+
+        if not isinstance(object_ids, list):
+            raise ValueError("'object_ids' must either by an object ID "
+                             "or a list of object IDs.")
+
         global last_task_error_raise_time
-        if isinstance(object_ids, list):
-            values = worker.get_object(object_ids)
-            for i, value in enumerate(values):
-                if isinstance(value, RayError):
-                    last_task_error_raise_time = time.time()
-                    raise value
-            return values
-        else:
-            value = worker.get_object([object_ids])[0]
+        values = worker.get_object(object_ids)
+        for i, value in enumerate(values):
             if isinstance(value, RayError):
-                # If the result is a RayError, then the task that created
-                # this object failed, and we should propagate the error message
-                # here.
                 last_task_error_raise_time = time.time()
                 raise value
-            return value
+
+        # Run post processors.
+        for post_processor in worker._post_get_hooks:
+            values = post_processor(object_ids, values)
+
+        if is_individual_id:
+            values = values[0]
+        return values
 
 
 def put(value):
