@@ -98,32 +98,6 @@ class JsonLogger(Logger):
         self.local_out.close()
 
 
-def make_histogram(values, bins=1000):
-    # Create histogram using numpy
-    counts, bin_edges = np.histogram(values, bins=bins)
-
-    # Fill fields of histogram proto
-    hist = tf.HistogramProto()
-    hist.min = float(np.min(values))
-    hist.max = float(np.max(values))
-    hist.num = int(np.prod(values.shape))
-    hist.sum = float(np.sum(values))
-    hist.sum_squares = float(np.sum(values**2))
-
-    # Requires equal number as bins, where the first goes from -DBL_MAX to bin_edges[1]
-    # See https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/summary.proto#L30
-    # Thus, we drop the start of the first bin
-    bin_edges = bin_edges[1:]
-
-    # Add bin edges and counts
-    for edge in bin_edges:
-        hist.bucket_limit.append(edge)
-    for c in counts:
-        hist.bucket.append(c)
-
-    return hist
-
-
 def to_tf_values(result, path):
     values = []
     for attr, value in result.items():
@@ -133,19 +107,9 @@ def to_tf_values(result, path):
             else:
                 type_list = [int, float]
             if type(value) in type_list:
-                learner_path = ["ray", "tune", "info", "learner"]
-                if path[:len(learner_path)] == learner_path:
-                    tag = "/".join(path[len(learner_path):] + [attr])
-                else:
-                    tag = "/".join(path + [attr])
-
                 values.append(
                     tf.Summary.Value(
-                        tag=tag, simple_value=value))
-            elif isinstance(value, np.ndarray):
-                values.append(
-                    tf.Summary.Value(
-                        tag=f"{path[-1]}/{attr}", histo=make_histogram(value)))
+                        tag="/".join(path + [attr]), simple_value=value))
             elif type(value) is dict:
                 values.extend(to_tf_values(value, path + [attr]))
     return values
@@ -171,11 +135,11 @@ class TFLogger(Logger):
         ]:
             if k in tmp:
                 del tmp[k]  # not useful to tf log these
-        values = to_tf_values(tmp, ["ray", "tune"])
+        values = self.config['evaluation_config']['to_tf_values'](tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        iteration_value = to_tf_values({
+        iteration_value = self.config['evaluation_config']['to_tf_values']({
             "training_iteration": result[TRAINING_ITERATION]
         }, ["ray", "tune"])
         iteration_stats = tf.Summary(value=iteration_value)
