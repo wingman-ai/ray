@@ -7,7 +7,6 @@ import csv
 import json
 import logging
 import os
-import subprocess
 import yaml
 import distutils.version
 import numbers
@@ -17,7 +16,7 @@ import numpy as np
 import ray.cloudpickle as cloudpickle
 from ray.tune.log_sync import get_syncer
 from ray.tune.result import NODE_IP, TRAINING_ITERATION, TIME_TOTAL_S, \
-    TIMESTEPS_TOTAL, EPISODE_REWARD_MEAN
+    TIMESTEPS_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +151,6 @@ def to_tf_values(result, path):
     return values
 
 
-def sendmessage(message):
-    subprocess.Popen(['notify-send', message])
-    subprocess.Popen(['paplay', '--volume', '50000', '/usr/share/sounds/freedesktop/stereo/complete.oga'])
-    return
-
-
 class TFLogger(Logger):
     def _init(self):
         try:
@@ -171,27 +164,7 @@ class TFLogger(Logger):
                            "disabling TensorBoard logging.")
         self._file_writer = tf.summary.FileWriter(self.logdir)
 
-        self.time_10_mins_notification_sent = False
-        self.time_20_mins_notification_sent = False
-        self.reward_notification_sent = False
-
     def on_result(self, result):
-        if result[TRAINING_ITERATION] > 10:
-            if result[TIME_TOTAL_S] > 60 * 10:
-                if not self.time_10_mins_notification_sent:
-                    sendmessage('10 minutes into training')
-                    self.time_10_mins_notification_sent = True
-
-            if result[TIME_TOTAL_S] > 60 * 20:
-                if not self.time_20_mins_notification_sent:
-                    sendmessage('20 minutes into training')
-                    self.time_20_mins_notification_sent = True
-
-            if result[EPISODE_REWARD_MEAN] > 0.5:
-                if not self.reward_notification_sent:
-                    sendmessage('reached episode mean reward of 0.5')
-                    self.reward_notification_sent = True
-
         tmp = result.copy()
         for k in [
                 "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
