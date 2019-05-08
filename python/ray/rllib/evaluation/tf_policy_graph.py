@@ -382,11 +382,9 @@ class TFPolicyGraph(PolicyGraph):
         builder.add_feed_dict({self._is_training: False})
         builder.add_feed_dict(dict(zip(self._state_inputs, state_batches)))
 
-        language_inputs = self.model.language_inputs if hasattr(self.model, 'language_inputs') else self.state_values
-
         fetches = builder.add_fetches([self._sampler] + self._state_outputs +
-                                      [self.extra_compute_action_fetches()] + [self.state_values] + [language_inputs])
-        return fetches[0], fetches[1:-3], fetches[-3], fetches[-2], fetches[-1]
+                                      [self.extra_compute_action_fetches()])
+        return fetches[0], fetches[1:-1], fetches[-1]
 
     def _build_compute_gradients(self, builder, postprocessed_batch):
         builder.add_feed_dict(self.extra_compute_grad_feed_dict())
