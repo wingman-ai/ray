@@ -18,18 +18,29 @@ matrix:
     - if [ $RAY_CI_LINUX_WHEELS_AFFECTED != "1" ]; then exit; fi
     - "./ci/travis/test-wheels.sh"
 
-before_deploy:
-    - export DIR=$(if [ "$TRAVIS_BRANCH" == "master" ]; then echo "$TRAVIS_COMMIT"; else echo $TRAVIS_BRANCH; fi)
-    - echo "BRANCH=$TRAVIS_BRANCH, DIR=$DIR"
 deploy:
 - provider: s3
   access_key_id: &aws_key
-      secure: "gLghNBxN4PoskcHo28SeA3XchkOi9Xc2l2cvLteF8/JN2Peprp4JQm4/d/qhpyJc6uZzzpKqT2LLfdMl8Xquf9lPcuZWOZj7xOdzaNJyfPZQa3XgwND7pNTVBSTF+ubgbzXI7+c6aUQ2H1pqX8J2vsAy1cTukKZzV3/9KKAtvubRye0i9ZblJZihCEeY3jRCZhy7y0nw8x9mgJrdEiUFC9aKgvD1Uki9LnFqD3adk+zPTdo4+P0AekAekv4tGybrYJBI79M1q8kOXctTK11oNRU8mDVkuzppgvE6AFIV6mZ6ojjiSHS/JmXvOINW6XyWf9vEOgZkh4qh1jhl2ereNCu2OVvAR4LM9lPMa4W0dGPwMFdSqE+yATNi1Sbhq6Y4xbW/TyY6tFWhyL5oVyWLqZ29XOboVHJpEYq8myhXlVD7zwMwpUeDt2nrUIQGTMBmtg8oI7rHncD+sV0tW9Mp+KLu7MOAQS+752/apMssJrmKaVJjxYc0hKDo1AiflVjNDeF1kLlGpsHuC7tBaoA29/SkL1YjcOGt4/NW5Xi1yJNbDh56T9RpyIZB0EksuteesrRMy1Gy5EGkZGe3VbLqz96+PLg5dXkrfKTeVNIlQdIlw4jXg89xJSrQRuiumyCvzCuAhoPW7PBdI/HChbqrev5Xl9+v6vIgR1xFPkybwxs="
+    secure: "xxyZ6+irrq1YEO/T2P+mBQeQtcyGpkh4Py6jchymhpEoIPcrBpzZc+E+B8JZ8pck06oe1eTC1uBhXl87iyIEIvK0TsqASUtPQ4EsNy8F7/4fe1P7J32P/wz3IM2Y/PmDaT32BCMadDVl+6TDtd+No8Mjiq4u5Bgf2R2B1vlTkMQYTZ4mnqCxNvlV34ldPakgNNkrVIwYqj1Boqu8brGr2Tr+O4dt3M7J3qXSAPQkbMh2NbjDnSjObRLMnhVj+69eD92GL6f0xP6z2jfGeDdUS39nR8UmZQ5Afmia7Tw5W+eg3ARssOjtmvAySQ8eDoQAkY03bSB/i+fP4tJXeT8qaP6x3+q46Xl8vSSyKgkXorLkGyec6JKhjiPE78ii/OMjEStWKR3OZIORpm5JaVU4DbjGYtb0t0kNlYQ3YojUDv9LdiBnQs7QgSHcBH9MCpTt4GWKqWYiPEcRDbSO0oAtJE7x/vgz57VlYnC1iBXSWxBoFKFTt/TJjPY5U1KMOu+PXFC92hw+cT/mo9DGcfJrQDEAJbZk6W85VUwt4tDBEscWjQ/UJAbF9DQsWIFDwlSq+KmyrOx/lbIO+8+e+6wCIBIgBzxGQwhhN6kqfGb9W+skjRMOGzln8AmzrJLeshmtxLo+OSqfT+GyK+VtLa1nPjahuGIbY4RxHyMd2xApynI="
   secret_access_key: &aws_secret
-      secure: "toBq7x6jSi2UHhdXoHOz3MzK/gl2kVbQR6nWHvoC1Falrn5lM/TeVH4dwFbl0Y1Bz0LH5vilqFZfPir351P8NbJuEnnRE5LaAM4FA3CfaSbIr897ZoM4IsmCLNGgOJutLXKAI1OhM3NS6vAua618U2MRweKc9XmOj0agLxzPuW9iJy6R40DJtRuHrGWGF5ZTNiRPRi1XXRDj0YDa0FrX0C34Rvcl13+viwY+JH0i47Yit3u8oMbUxL1ZbPVzVJonUWKJoLxsc3y0wA+qyKm8XEDfcnaXiHUUSbNCU/SfxSut+LR+ifWVwnvyewWAD+2a+kdU5IYsUhA3DrkLx2lRabIxvOn6R96zkiXSzs8lW3V55K2tz8CeFmcoZ9M/4YxvWBxOGABskveB0MUz48GZof4deKLgdLJp+P3TzYH/h4D/0FSaibYhvJq8pHVrCVYCGhZjJoalcYBozU9aPtUzKCLTi1/f7CJP2ki+XPzHh0Zvs0+sAnCHuBLqhUuZBuWFHY4ux3jCaPTBx+lR69zGuJWLBTcQh3RLipmYi86homHo1DnLD6CwwC4J1Dkt5Tt2laPK3HLSzRQTw5DP0p25vERNULAHcbb9mwg+wkqQcR5rBrmRwc3/2ZvNCgNanpFaRXJdNUIPgDZIrg0t1wR+TQJ6kDVSGexKf7L8wGLYspA="
+    secure: "wYKdz/BfEKVHDKao+WkpTnLTf0svdJKUmjpriImCeYV7qb+LHvwrv0ddNU7N7+SbGM7/nruWICvNtyvAZPjwXWEINYsvxGtI5bJJLYnOINRjnWsj7UXGje1hqZ5feBgdtxj88nrknzMWBJ4jIkNqzcaeo8GLZvKs/nZ3Lg4dOXHCUQr1MqPT/hSF51qYfVRuHatfpjnqZm5O01QGrEBrBtG24qwFcYQWb8PupI3XSgXVBpaWxb2F9FIZah+NBbw+tbVw1OC0udXrcjNaB5GGHTH8G4YXIOLhV1boLcQ6tn1IfS72Ry7YHtiRCWevONzCJye9bDWhATotfJSU9nD02MNQ4qu3i6jWwI2SHg9oXnlZlOE1812B1Z/XSCNYj+r5wpTtITNbfGuEI4p4uq1m+63YMiwsBZxmESR0X7awMf7nD/MpaBnyzMPqFkbtK0Zy0m2Zb9jt7sns0RGfiTSDkKWrPHJ5QNQmtiEohYGKND0suBU6l/v+uEUxd3EQ5r5G/QbeEObjSq4V9xA/InAfz4qBXlST/NpouBkXqFbIwMwa3AWwxmGGnn56bEYTcVLgRHNtDpVjPf/ZTfIKEBRzNRzKPHrBpkjbNPYXCAsWZyGPLYCRzTyaS+1xxZpxU6/oxq2Hlc+5/DASFWXdJRkmZF+4XbxnPK00Qm8q23y+pzc="
   bucket: public-wman
   local-dir: .whl
-  upload-dir: ray/${DIR}
+  upload-dir: ray/${TRAVIS_BRANCH}/${TRAVIS_COMMIT}
+  acl: public_read
+  skip_cleanup: true
+  file_glob: true
+  region: eu-west-1
+  on:
+    repo: wingman-ai/ray
+    branch: master
+
+- provider: s3
+  access_key_id: *aws_key
+  secret_access_key: *aws_secret
+  bucket: public-wman
+  local-dir: .whl
+  upload-dir: ray/${TRAVIS_BRANCH}/latest
   acl: public_read
   skip_cleanup: true
   file_glob: true
@@ -37,29 +48,4 @@ deploy:
   on:
     repo: wingman-ai/ray
     all_branches: true
-    condition: $TRAVIS_BRANCH != "master"
-- provider: s3
-  access_key_id: *aws_key
-  secret_access_key: *aws_secret
-  bucket: public-wman
-  local-dir: .whl
-  upload-dir: ray/master/${DIR}
-  acl: public_read
-  skip_cleanup: true
-  file_glob: true
-  region: eu-west-1
-  on: &master_deploy
-    repo: wingman-ai/ray
-    all_branches: true
-    condition: $TRAVIS_BRANCH == "master"
-- provider: s3
-  access_key_id: *aws_key
-  secret_access_key: *aws_secret
-  bucket: public-wman
-  local-dir: .whl
-  upload-dir: ray/master/latest
-  acl: public_read
-  skip_cleanup: true
-  file_glob: true
-  region: eu-west-1
-  on: *master_deploy
+
