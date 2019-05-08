@@ -196,12 +196,12 @@ class TFPolicyGraph(PolicyGraph):
         builder.get(fetches)
 
     @override(PolicyGraph)
-    def learn_on_batch(self, postprocessed_batch):
-        return self._learn_on_batch(self._sess, postprocessed_batch)
+    def learn_on_batch(self, postprocessed_batch, should_learn=True):
+        return self._learn_on_batch(self._sess, postprocessed_batch, should_learn)
 
-    def _learn_on_batch(self, sess, postprocessed_batch):
+    def _learn_on_batch(self, sess, postprocessed_batch, should_learn):
         builder = TFRunBuilder(sess, "learn_on_batch")
-        fetches = self._build_learn_on_batch(builder, postprocessed_batch)
+        fetches = self._build_learn_on_batch(builder, postprocessed_batch, should_learn)
         return builder.get(fetches)
 
     @override(PolicyGraph)
@@ -406,15 +406,17 @@ class TFPolicyGraph(PolicyGraph):
         fetches = builder.add_fetches([self._apply_op])
         return fetches[0]
 
-    def _build_learn_on_batch(self, builder, postprocessed_batch):
+    def _build_learn_on_batch(self, builder, postprocessed_batch, should_learn=True):
         builder.add_feed_dict(self.extra_compute_grad_feed_dict())
         builder.add_feed_dict(self._get_loss_inputs_dict(postprocessed_batch))
         builder.add_feed_dict({self._is_training: True})
+        logger.info(f'>>>>>>>>> SHOULD_LEARN {should_learn}')
         fetches = builder.add_fetches([
             self._apply_op,
             self._get_grad_and_stats_fetches(),
             [self.model.conv1, self.model.conv2],
         ])
+
         return fetches[1], fetches[2]
 
     def _get_grad_and_stats_fetches(self):
