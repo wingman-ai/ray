@@ -7,8 +7,8 @@ from __future__ import division
 from __future__ import print_function
 
 import gym
-import numpy as np
 import ray
+import numpy as np
 import tensorflow as tf
 from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
@@ -310,6 +310,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                                       self.config["lr_schedule"])
 
         with tf.name_scope('TFPolicyGraph.__init__'):
+            self.state_values = values
             TFPolicyGraph.__init__(
                 self,
                 observation_space,
