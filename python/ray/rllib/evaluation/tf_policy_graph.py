@@ -197,7 +197,10 @@ class TFPolicyGraph(PolicyGraph):
 
     @override(PolicyGraph)
     def learn_on_batch(self, postprocessed_batch):
-        builder = TFRunBuilder(self._sess, "learn_on_batch")
+        return self._learn_on_batch(self._sess, postprocessed_batch)
+
+    def _learn_on_batch(self, sess, postprocessed_batch):
+        builder = TFRunBuilder(sess, "learn_on_batch")
         fetches = self._build_learn_on_batch(builder, postprocessed_batch)
         return builder.get(fetches)
 
