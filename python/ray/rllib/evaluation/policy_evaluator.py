@@ -556,12 +556,16 @@ class PolicyEvaluator(EvaluatorInterface):
         else:
             return self.policy_map[DEFAULT_POLICY_ID].apply_gradients(grads)
 
+    learn_on_batch_count = 0
+
     @override(EvaluatorInterface)
     def learn_on_batch(self, samples):
         if log_once("learn_on_batch"):
             logger.info(
                 "Training on concatenated sample batches:\n\n{}\n".format(
                     summarize(samples)))
+        self.learn_on_batch_count += 1
+        logger.info(f'================================== LEARN_ON_BATCH_COUNT {self.learn_on_batch_count}')
         if isinstance(samples, MultiAgentBatch):
             info_out = {}
             to_fetch = {}
@@ -581,7 +585,7 @@ class PolicyEvaluator(EvaluatorInterface):
             info_out.update({k: builder.get(v) for k, v in to_fetch.items()})
         else:
             info_out = self.policy_map[DEFAULT_POLICY_ID].learn_on_batch(
-                samples)
+                samples, should_learn=self.learn_on_batch_count > 0)
         if log_once("learn_out"):
             logger.info("Training output:\n\n{}\n".format(summarize(info_out)))
         return info_out
