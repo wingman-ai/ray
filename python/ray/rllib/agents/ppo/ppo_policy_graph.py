@@ -282,6 +282,7 @@ class PPOPolicyGraph(LearningRateSchedule, PPOPostprocessing, TFPolicyGraph):
 
         LearningRateSchedule.__init__(self, self.config["lr"],
                                       self.config["lr_schedule"])
+        self.state_values = self.value_function
         TFPolicyGraph.__init__(
             self,
             observation_space,
