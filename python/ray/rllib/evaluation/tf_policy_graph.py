@@ -410,12 +410,14 @@ class TFPolicyGraph(PolicyGraph):
         builder.add_feed_dict({self._is_training: True})
         logger.info(f'>>>>>>>>> SHOULD_LEARN {should_learn}')
         fetches = builder.add_fetches([
-            self._apply_op,
             self._get_grad_and_stats_fetches(),
             [self.model.conv1, self.model.conv2],
         ])
 
-        return fetches[1], fetches[2]
+        if should_learn:
+            builder.add_fetches([self._apply_op])
+
+        return fetches[0], fetches[1]
 
     def _get_grad_and_stats_fetches(self):
         fetches = self.extra_compute_grad_fetches()
