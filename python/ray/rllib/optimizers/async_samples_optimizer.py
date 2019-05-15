@@ -47,9 +47,6 @@ class AsyncSamplesOptimizer(PolicyOptimizer):
                  _fake_gpus=False):
         PolicyOptimizer.__init__(self, local_evaluator, remote_evaluators)
 
-        if callable(train_batch_size):
-            train_batch_size = train_batch_size(sample_batch_size)
-
         self._stats_start_time = time.time()
         self._last_stats_time = {}
         self._last_stats_sum = {}

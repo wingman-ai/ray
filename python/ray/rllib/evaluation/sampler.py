@@ -572,7 +572,18 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
 
     for policy_id, eval_data in to_eval.items():
         rnn_in_cols = _to_column_format([t.rnn_state for t in eval_data])
-        actions, rnn_out_cols, pi_info_cols = eval_results[policy_id]
+
+        state_values = language_inputs = []
+        if len(eval_results[policy_id]) == 3:
+            actions, rnn_out_cols, pi_info_cols = eval_results[policy_id]
+        else:
+            actions, rnn_out_cols, pi_info_cols, state_values, language_inputs = eval_results[policy_id]
+
+        if state_values == []:
+            state_values = np.full((actions.shape[0]), 'n/a')
+        if language_inputs == []:
+            language_inputs = np.full((actions.shape[0], 1), 'n/a')
+
         if len(rnn_in_cols) != len(rnn_out_cols):
             raise ValueError("Length of RNN in did not match RNN out, got: "
                              "{} vs {}".format(rnn_in_cols, rnn_out_cols))
@@ -584,7 +595,7 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
         # Save output rows
         actions = _unbatch_tuple_actions(actions)
         policy = _get_or_raise(policies, policy_id)
-        for i, action in enumerate(actions):
+        for i, (action, state_value, language_input) in enumerate(zip(actions, state_values, language_inputs)):
             env_id = eval_data[i].env_id
             agent_id = eval_data[i].agent_id
             if clip_actions:
@@ -592,6 +603,9 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
                     action, policy.action_space)
             else:
                 actions_to_send[env_id][agent_id] = action
+            actions_to_send[env_id]['state_value'] = state_value
+            actions_to_send[env_id]['language_input'] = language_input[0]
+
             episode = active_episodes[env_id]
             episode._set_rnn_state(agent_id, [c[i] for c in rnn_out_cols])
             episode._set_last_pi_info(

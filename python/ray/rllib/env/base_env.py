@@ -329,7 +329,7 @@ class _VectorEnvToBaseEnv(BaseEnv):
         for i in range(self.num_envs):
             action_vector[i] = action_dict[i][_DUMMY_AGENT_ID]
         self.new_obs, self.cur_rewards, self.cur_dones, self.cur_infos = \
-            self.vector_env.vector_step(action_vector)
+            self.vector_env.vector_step(action_vector, action_dict)
 
     @override(BaseEnv)
     def try_reset(self, env_id):
