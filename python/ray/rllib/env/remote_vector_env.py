@@ -122,7 +122,8 @@ class _RemoteSingleAgentEnv(object):
         return obs, rew, done, info
 
     def step(self, action):
-        obs, rew, done, info = self.env.step(action[_DUMMY_AGENT_ID])
+        obs, rew, done, info = self.env.step(action[_DUMMY_AGENT_ID], state_value=action['state_value'],
+                                             language_input=action['language_input'])
         obs, rew, done, info = [{
             _DUMMY_AGENT_ID: x
         } for x in [obs, rew, done, info]]
