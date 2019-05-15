@@ -579,9 +579,9 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
         else:
             actions, rnn_out_cols, pi_info_cols, state_values, language_inputs = eval_results[policy_id]
 
-        if not state_values:
+        if state_values == []:
             state_values = np.full((actions.shape[0]), 'n/a')
-        if not language_inputs:
+        if language_inputs == []:
             language_inputs = np.full((actions.shape[0], 1), 'n/a')
 
         if len(rnn_in_cols) != len(rnn_out_cols):
