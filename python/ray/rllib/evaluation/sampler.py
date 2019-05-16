@@ -605,7 +605,7 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
                 actions_to_send[env_id][agent_id] = action
             actions_to_send[env_id]['state_value'] = state_value
             actions_to_send[env_id]['language_input'] = language_input[0]
-            
+
             episode = active_episodes[env_id]
             episode._set_rnn_state(agent_id, [c[i] for c in rnn_out_cols])
             episode._set_last_pi_info(
