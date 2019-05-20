@@ -65,6 +65,7 @@ class Model(object):
         self.options = options
         self.scope = tf.get_variable_scope()
         self.session = tf.get_default_session()
+        self.beholder_tensors = []
         if seq_lens is not None:
             self.seq_lens = seq_lens
         else:
@@ -202,6 +203,9 @@ class Model(object):
                 raise ValueError(
                     "Expected output shape of [None, {}], got {}".format(
                         self._num_outputs, shape))
+
+    def watch_tensor(self, tensor):
+        self.beholder_tensors.append(tensor)
 
 
 @DeveloperAPI

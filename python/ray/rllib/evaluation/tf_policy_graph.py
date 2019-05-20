@@ -410,8 +410,9 @@ class TFPolicyGraph(PolicyGraph):
         fetches = builder.add_fetches([
             self._apply_op,
             self._get_grad_and_stats_fetches(),
+            self.model.beholder_tensors
         ])
-        return fetches[1]
+        return fetches[1], fetches[2]
 
     def _get_grad_and_stats_fetches(self):
         fetches = self.extra_compute_grad_fetches()
