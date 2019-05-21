@@ -145,6 +145,7 @@ class TFPolicyGraph(PolicyGraph):
         else:
             self._update_ops = tf.get_collection(
                 tf.GraphKeys.UPDATE_OPS, scope=tf.get_variable_scope().name)
+            self._update_ops.extend(self.model.batch_norm.updates)
         if self._update_ops:
             logger.debug("Update ops to run on apply gradient: {}".format(
                 self._update_ops))
