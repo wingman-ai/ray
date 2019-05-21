@@ -2,35 +2,37 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from datetime import datetime
 import copy
 import logging
 import os
 import pickle
-import six
-import time
 import tempfile
+import time
+from datetime import datetime
 from types import FunctionType
 
 import ray
+import six
 from ray.exceptions import RayError
-from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
-    ShuffledInput
-from ray.rllib.models import MODEL_DEFAULTS
+from ray.rllib.evaluation.metrics import collect_metrics
 from ray.rllib.evaluation.policy_evaluator import PolicyEvaluator, \
     _validate_multiagent_config
 from ray.rllib.evaluation.sample_batch import DEFAULT_POLICY_ID
-from ray.rllib.evaluation.metrics import collect_metrics
+from ray.rllib.models import MODEL_DEFAULTS
+from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
+    ShuffledInput
 from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
-from ray.rllib.utils.annotations import override, PublicAPI, DeveloperAPI
 from ray.rllib.utils import FilterManager, deep_update, merge_dicts
-from ray.rllib.utils.memory import ray_get_and_free
 from ray.rllib.utils import try_import_tf
+from ray.rllib.utils.annotations import override, PublicAPI, DeveloperAPI
+from ray.rllib.utils.memory import ray_get_and_free
+from ray.tune.logger import UnifiedLogger
 from ray.tune.registry import ENV_CREATOR, register_env, _global_registry
+from ray.tune.result import DEFAULT_RESULTS_DIR
 from ray.tune.trainable import Trainable
 from ray.tune.trial import Resources, ExportFormat
-from ray.tune.logger import UnifiedLogger
-from ray.tune.result import DEFAULT_RESULTS_DIR
+
+from python.ray.tune.logger import to_tf_values
 
 tf = try_import_tf()
 
@@ -108,7 +110,10 @@ COMMON_CONFIG = {
     # and to disable exploration by computing deterministic actions
     # TODO(kismuz): implement determ. actions and include relevant keys hints
     "evaluation_config": {
-        "beholder": False
+        "beholder": False,
+        "should_log_histograms": False,
+        "to_tf_values": to_tf_values,
+        "debug_learner_session_port": None,
     },
 
     # === Resources ===
