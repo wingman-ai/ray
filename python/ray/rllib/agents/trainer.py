@@ -32,7 +32,7 @@ from ray.tune.result import DEFAULT_RESULTS_DIR
 from ray.tune.trainable import Trainable
 from ray.tune.trial import Resources, ExportFormat
 
-from python.ray.tune.logger import to_tf_values
+from ray.tune.logger import to_tf_values
 
 tf = try_import_tf()
 
