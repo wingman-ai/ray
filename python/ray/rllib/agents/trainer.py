@@ -2,35 +2,38 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from datetime import datetime
 import copy
 import logging
 import os
 import pickle
-import six
-import time
 import tempfile
-import tensorflow as tf
+import time
+from datetime import datetime
 from types import FunctionType
 
 import ray
+import six
 from ray.exceptions import RayError
-from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
-    ShuffledInput
-from ray.rllib.models import MODEL_DEFAULTS
+from ray.rllib.evaluation.metrics import collect_metrics
 from ray.rllib.evaluation.policy_evaluator import PolicyEvaluator, \
     _validate_multiagent_config
-from ray.rllib.evaluation.sample_batch import DEFAULT_POLICY_ID
-from ray.rllib.evaluation.metrics import collect_metrics
+from ray.rllib.models import MODEL_DEFAULTS
+from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
+    ShuffledInput
 from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
-from ray.rllib.utils.annotations import override, PublicAPI, DeveloperAPI
+from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.utils import FilterManager, deep_update, merge_dicts
+from ray.rllib.utils import try_import_tf
+from ray.rllib.utils.annotations import override, PublicAPI, DeveloperAPI
 from ray.rllib.utils.memory import ray_get_and_free
+from ray.tune.logger import UnifiedLogger
+from ray.tune.logger import to_tf_values
 from ray.tune.registry import ENV_CREATOR, register_env, _global_registry
+from ray.tune.result import DEFAULT_RESULTS_DIR
 from ray.tune.trainable import Trainable
 from ray.tune.trial import Resources, ExportFormat
-from ray.tune.logger import UnifiedLogger
-from ray.tune.result import DEFAULT_RESULTS_DIR
+
+tf = try_import_tf()
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +57,11 @@ COMMON_CONFIG = {
     # metrics can be attached to the episode by updating the episode object's
     # custom metrics dict (see examples/custom_metrics_and_callbacks.py).
     "callbacks": {
-        "on_episode_start": None,     # arg: {"env": .., "episode": ...}
-        "on_episode_step": None,      # arg: {"env": .., "episode": ...}
-        "on_episode_end": None,       # arg: {"env": .., "episode": ...}
-        "on_sample_end": None,        # arg: {"samples": .., "evaluator": ...}
-        "on_train_result": None,      # arg: {"trainer": ..., "result": ...}
+        "on_episode_start": None,  # arg: {"env": .., "episode": ...}
+        "on_episode_step": None,  # arg: {"env": .., "episode": ...}
+        "on_episode_end": None,  # arg: {"env": .., "episode": ...}
+        "on_sample_end": None,  # arg: {"samples": .., "evaluator": ...}
+        "on_train_result": None,  # arg: {"trainer": ..., "result": ...}
         "on_postprocess_traj": None,  # arg: {"batch": ..., "episode": ...}
     },
     # Whether to attempt to continue training if a worker crashes.
@@ -106,7 +109,10 @@ COMMON_CONFIG = {
     # and to disable exploration by computing deterministic actions
     # TODO(kismuz): implement determ. actions and include relevant keys hints
     "evaluation_config": {
-        "beholder": False
+        "beholder": False,
+        "should_log_histograms": False,
+        "to_tf_values": to_tf_values,
+        "debug_learner_session_port": None,
     },
 
     # === Resources ===
@@ -220,15 +226,17 @@ COMMON_CONFIG = {
 
     # === Multiagent ===
     "multiagent": {
-        # Map from policy ids to tuples of (policy_graph_cls, obs_space,
+        # Map from policy ids to tuples of (policy_cls, obs_space,
         # act_space, config). See policy_evaluator.py for more info.
-        "policy_graphs": {},
+        "policies": {},
         # Function mapping agent ids to policy ids.
         "policy_mapping_fn": None,
         # Optional whitelist of policies to train, or None for all policies.
         "policies_to_train": None,
     },
 }
+
+
 # __sphinx_doc_end__
 # yapf: enable
 
@@ -414,8 +422,13 @@ class Trainer(Trainable):
         if self.config.get("log_level"):
             logging.getLogger("ray.rllib").setLevel(self.config["log_level"])
 
-        # TODO(ekl) setting the graph is unnecessary for PyTorch agents
-        with tf.Graph().as_default():
+        def get_scope():
+            if tf:
+                return tf.Graph().as_default()
+            else:
+                return open("/dev/null")  # fake a no-op scope
+
+        with get_scope():
             self._init(self.config, self.env_creator)
 
             # Evaluation related
@@ -430,9 +443,7 @@ class Trainer(Trainable):
                     "using evaluation_config: {}".format(extra_config))
                 # Make local evaluation evaluators
                 self.evaluation_ev = self.make_local_evaluator(
-                    self.env_creator,
-                    self._policy_graph,
-                    extra_config=extra_config)
+                    self.env_creator, self._policy, extra_config=extra_config)
                 self.evaluation_metrics = self._evaluate()
 
     @override(Trainable)
@@ -573,10 +584,10 @@ class Trainer(Trainable):
 
     @PublicAPI
     def get_policy(self, policy_id=DEFAULT_POLICY_ID):
-        """Return policy graph for the specified id, or None.
+        """Return policy for the specified id, or None.
 
         Arguments:
-            policy_id (str): id of policy graph to return.
+            policy_id (str): id of policy to return.
         """
 
         return self.local_evaluator.get_policy(policy_id)
@@ -601,28 +612,25 @@ class Trainer(Trainable):
         self.local_evaluator.set_weights(weights)
 
     @DeveloperAPI
-    def make_local_evaluator(self,
-                             env_creator,
-                             policy_graph,
-                             extra_config=None):
+    def make_local_evaluator(self, env_creator, policy, extra_config=None):
         """Convenience method to return configured local evaluator."""
 
         return self._make_evaluator(
             PolicyEvaluator,
             env_creator,
-            policy_graph,
+            policy,
             0,
             merge_dicts(
                 # important: allow local tf to use more CPUs for optimization
                 merge_dicts(
                     self.config, {
                         "tf_session_args": self.
-                        config["local_evaluator_tf_session_args"]
+                            config["local_evaluator_tf_session_args"]
                     }),
                 extra_config or {}))
 
     @DeveloperAPI
-    def make_remote_evaluators(self, env_creator, policy_graph, count):
+    def make_remote_evaluators(self, env_creator, policy, count):
         """Convenience method to return a number of remote evaluators."""
 
         remote_args = {
@@ -634,8 +642,8 @@ class Trainer(Trainable):
         cls = PolicyEvaluator.as_remote(**remote_args).remote
 
         return [
-            self._make_evaluator(cls, env_creator, policy_graph, i + 1,
-                                 self.config) for i in range(count)
+            self._make_evaluator(cls, env_creator, policy, i + 1, self.config)
+            for i in range(count)
         ]
 
     @DeveloperAPI
@@ -695,6 +703,13 @@ class Trainer(Trainable):
 
     @staticmethod
     def _validate_config(config):
+        if "policy_graphs" in config["multiagent"]:
+            logger.warning(
+                "The `policy_graphs` config has been renamed to `policies`.")
+            # Backwards compatibility
+            config["multiagent"]["policies"] = config["multiagent"][
+                "policy_graphs"]
+            del config["multiagent"]["policy_graphs"]
         if "gpu" in config:
             raise ValueError(
                 "The `gpu` config is deprecated, please use `num_gpus=0|1` "
@@ -755,8 +770,7 @@ class Trainer(Trainable):
         return hasattr(self, "optimizer") and isinstance(
             self.optimizer, PolicyOptimizer)
 
-    def _make_evaluator(self, cls, env_creator, policy_graph, worker_index,
-                        config):
+    def _make_evaluator(self, cls, env_creator, policy, worker_index, config):
         def session_creator():
             logger.debug("Creating TF session {}".format(
                 config["tf_session_args"]))
@@ -798,18 +812,18 @@ class Trainer(Trainable):
         else:
             input_evaluation = config["input_evaluation"]
 
-        # Fill in the default policy graph if 'None' is specified in multiagent
-        if self.config["multiagent"]["policy_graphs"]:
-            tmp = self.config["multiagent"]["policy_graphs"]
+        # Fill in the default policy if 'None' is specified in multiagent
+        if self.config["multiagent"]["policies"]:
+            tmp = self.config["multiagent"]["policies"]
             _validate_multiagent_config(tmp, allow_none_graph=True)
             for k, v in tmp.items():
                 if v[0] is None:
-                    tmp[k] = (policy_graph, v[1], v[2], v[3])
-            policy_graph = tmp
+                    tmp[k] = (policy, v[1], v[2], v[3])
+            policy = tmp
 
         return cls(
             env_creator,
-            policy_graph,
+            policy,
             policy_mapping_fn=self.config["multiagent"]["policy_mapping_fn"],
             policies_to_train=self.config["multiagent"]["policies_to_train"],
             tf_session_creator=(session_creator

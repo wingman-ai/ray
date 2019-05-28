@@ -2,19 +2,20 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
-
 import ray
 from ray.rllib.models import ModelCatalog
 from ray.rllib.evaluation.postprocessing import compute_advantages, \
     Postprocessing
-from ray.rllib.evaluation.sample_batch import SampleBatch
+from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
 from ray.rllib.utils.annotations import override
-from ray.rllib.evaluation.policy_graph import PolicyGraph
-from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph
-from ray.rllib.agents.dqn.dqn_policy_graph import _scope_vars
+from ray.rllib.policy.policy import Policy
+from ray.rllib.policy.tf_policy import TFPolicy
+from ray.rllib.agents.dqn.dqn_policy import _scope_vars
 from ray.rllib.utils.explained_variance import explained_variance
+from ray.rllib.utils import try_import_tf
+
+tf = try_import_tf()
 
 POLICY_SCOPE = "p_func"
 VALUE_SCOPE = "v_func"
@@ -58,7 +59,7 @@ class ReweightedImitationLoss(object):
 class MARWILPostprocessing(object):
     """Adds the advantages field to the trajectory."""
 
-    @override(PolicyGraph)
+    @override(Policy)
     def postprocess_trajectory(self,
                                sample_batch,
                                other_agent_batches=None,
@@ -78,7 +79,7 @@ class MARWILPostprocessing(object):
         return batch
 
 
-class MARWILPolicyGraph(MARWILPostprocessing, TFPolicyGraph):
+class MARWILPolicy(MARWILPostprocessing, TFPolicy):
     def __init__(self, observation_space, action_space, config):
         config = dict(ray.rllib.agents.dqn.dqn.DEFAULT_CONFIG, **config)
         self.config = config
@@ -126,14 +127,14 @@ class MARWILPolicyGraph(MARWILPostprocessing, TFPolicyGraph):
         self.explained_variance = tf.reduce_mean(
             explained_variance(self.cum_rew_t, state_values))
 
-        # initialize TFPolicyGraph
+        # initialize TFPolicy
         self.sess = tf.get_default_session()
         self.loss_inputs = [
             (SampleBatch.CUR_OBS, self.obs_t),
             (SampleBatch.ACTIONS, self.act_t),
             (Postprocessing.ADVANTAGES, self.cum_rew_t),
         ]
-        TFPolicyGraph.__init__(
+        TFPolicy.__init__(
             self,
             observation_space,
             action_space,
@@ -165,10 +166,10 @@ class MARWILPolicyGraph(MARWILPostprocessing, TFPolicyGraph):
         return ReweightedImitationLoss(state_values, cum_rwds, logits, actions,
                                        action_space, self.config["beta"])
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def extra_compute_grad_fetches(self):
         return {LEARNER_STATS_KEY: self.stats_fetches}
 
-    @override(PolicyGraph)
+    @override(Policy)
     def get_initial_state(self):
         return self.model.state_init
