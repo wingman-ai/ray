@@ -2,7 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from ray.rllib.agents.trainer import Trainer
+from ray.rllib.agents.trainer import Trainer, COMMON_CONFIG
 from ray.rllib.optimizers import SyncSamplesOptimizer
 from ray.rllib.utils.annotations import override, DeveloperAPI
 
@@ -21,7 +21,7 @@ def build_trainer(name,
 
     Arguments:
         name (str): name of the trainer (e.g., "PPO")
-        default_policy (cls): the default PolicyGraph class to use
+        default_policy (cls): the default Policy class to use
         default_config (dict): the default config dict of the algorithm,
             otherwises uses the Trainer default config
         make_policy_optimizer (func): optional function that returns a
@@ -30,7 +30,7 @@ def build_trainer(name,
         validate_config (func): optional callback that checks a given config
             for correctness. It may mutate the config as needed.
         get_policy_class (func): optional callback that takes a config and
-            returns the policy graph class to override the default with
+            returns the policy class to override the default with
         before_train_step (func): optional callback to run before each train()
             call. It takes the trainer instance as an argument.
         after_optimizer_step (func): optional callback to run after each
@@ -44,26 +44,25 @@ def build_trainer(name,
         a Trainer instance that uses the specified args.
     """
 
-    if name.endswith("Trainer"):
-        raise ValueError("Algorithm name should not include *Trainer suffix",
-                         name)
+    if not name.endswith("Trainer"):
+        raise ValueError("Algorithm name should have *Trainer suffix", name)
 
     class trainer_cls(Trainer):
         _name = name
-        _default_config = default_config or Trainer.COMMON_CONFIG
-        _policy_graph = default_policy
+        _default_config = default_config or COMMON_CONFIG
+        _policy = default_policy
 
         def _init(self, config, env_creator):
             if validate_config:
                 validate_config(config)
             if get_policy_class is None:
-                policy_graph = default_policy
+                policy = default_policy
             else:
-                policy_graph = get_policy_class(config)
+                policy = get_policy_class(config)
             self.local_evaluator = self.make_local_evaluator(
-                env_creator, policy_graph)
+                env_creator, policy)
             self.remote_evaluators = self.make_remote_evaluators(
-                env_creator, policy_graph, config["num_workers"])
+                env_creator, policy, config["num_workers"])
             if make_policy_optimizer:
                 self.optimizer = make_policy_optimizer(
                     self.local_evaluator, self.remote_evaluators, config)
@@ -92,6 +91,6 @@ def build_trainer(name,
                 after_train_result(self, res)
             return res
 
-    trainer_cls.__name__ = name + "Trainer"
-    trainer_cls.__qualname__ = name + "Trainer"
+    trainer_cls.__name__ = name
+    trainer_cls.__qualname__ = name
     return trainer_cls

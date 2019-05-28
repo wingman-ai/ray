@@ -5,7 +5,7 @@ from __future__ import print_function
 import logging
 
 from ray.rllib.agents import with_common_config
-from ray.rllib.agents.ppo.ppo_policy_graph import PPOTFPolicy
+from ray.rllib.agents.ppo.ppo_policy import PPOTFPolicy
 from ray.rllib.agents.trainer_template import build_trainer
 from ray.rllib.optimizers import SyncSamplesOptimizer, LocalMultiGPUOptimizer
 
@@ -63,7 +63,7 @@ DEFAULT_CONFIG = with_common_config({
 # yapf: enable
 
 
-def make_optimizer(local_evaluator, remote_evaluators, config):
+def choose_policy_optimizer(local_evaluator, remote_evaluators, config):
     if config["simple_optimizer"]:
         return SyncSamplesOptimizer(
             local_evaluator,
@@ -143,8 +143,7 @@ def validate_config(config):
         raise ValueError(
             "Episode truncation is not supported without a value "
             "function. Consider setting batch_mode=complete_episodes.")
-    if (config["multiagent"]["policy_graphs"]
-            and not config["simple_optimizer"]):
+    if (config["multiagent"]["policies"] and not config["simple_optimizer"]):
         logger.info(
             "In multi-agent mode, policies will be optimized sequentially "
             "by the multi-GPU optimizer. Consider setting "
@@ -156,10 +155,10 @@ def validate_config(config):
 
 
 PPOTrainer = build_trainer(
-    name="PPO",
+    name="PPOTrainer",
     default_config=DEFAULT_CONFIG,
     default_policy=PPOTFPolicy,
-    make_policy_optimizer=make_optimizer,
+    make_policy_optimizer=choose_policy_optimizer,
     validate_config=validate_config,
     after_optimizer_step=update_kl,
     before_train_step=warn_about_obs_filter,

@@ -1,6 +1,6 @@
-"""Adapted from A3CPolicyGraph to add V-trace.
+"""Adapted from A3CTFPolicy to add V-trace.
 
-Keep in sync with changes to A3CPolicyGraph and VtraceSurrogatePolicyGraph."""
+Keep in sync with changes to A3CTFPolicy and VtraceSurrogatePolicy."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -11,9 +11,9 @@ import ray
 import numpy as np
 from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
-from ray.rllib.evaluation.policy_graph import PolicyGraph
-from ray.rllib.evaluation.sample_batch import SampleBatch
-from ray.rllib.evaluation.tf_policy_graph import TFPolicyGraph, \
+from ray.rllib.policy.policy import Policy
+from ray.rllib.policy.sample_batch import SampleBatch
+from ray.rllib.policy.tf_policy import TFPolicy, \
     LearningRateSchedule
 from ray.rllib.models.action_dist import MultiCategorical
 from ray.rllib.models.catalog import ModelCatalog
@@ -110,13 +110,13 @@ class VTraceLoss(object):
 class VTracePostprocessing(object):
     """Adds the policy logits to the trajectory."""
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def extra_compute_action_fetches(self):
         return dict(
-            TFPolicyGraph.extra_compute_action_fetches(self),
+            TFPolicy.extra_compute_action_fetches(self),
             **{BEHAVIOUR_LOGITS: self.model.outputs})
 
-    @override(PolicyGraph)
+    @override(Policy)
     def postprocess_trajectory(self,
                                sample_batch,
                                other_agent_batches=None,
@@ -126,8 +126,7 @@ class VTracePostprocessing(object):
         return sample_batch
 
 
-class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
-                        TFPolicyGraph):
+class VTraceTFPolicy(LearningRateSchedule, VTracePostprocessing, TFPolicy):
     def __init__(self,
                  observation_space,
                  action_space,
@@ -293,7 +292,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                     "max_KL": tf.reduce_max(kls[0]),
                 }
 
-        # Initialize TFPolicyGraph
+        # Initialize TFPolicy
         loss_in = [
             (SampleBatch.ACTIONS, actions),
             (SampleBatch.DONES, dones),
@@ -303,12 +302,13 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
             (SampleBatch.PREV_ACTIONS, prev_actions),
             (SampleBatch.PREV_REWARDS, prev_rewards),
         ]
+
         LearningRateSchedule.__init__(self, self.config["lr"],
                                       self.config["lr_schedule"])
 
         with tf.name_scope('TFPolicyGraph.__init__'):
             self.state_values = values
-            TFPolicyGraph.__init__(
+            TFPolicy.__init__(
                 self,
                 observation_space,
                 action_space,
@@ -344,15 +344,15 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                 }, **self.KL_stats),
             }
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def copy(self, existing_inputs):
-        return VTracePolicyGraph(
+        return VTraceTFPolicy(
             self.observation_space,
             self.action_space,
             self.config,
             existing_inputs=existing_inputs)
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def optimizer(self):
         if self.config["opt_type"] == "adam":
             return tf.train.AdamOptimizer(self.cur_lr)
@@ -361,7 +361,7 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
                                              self.config["momentum"],
                                              self.config["epsilon"])
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def gradients(self, optimizer, loss):
         grads = tf.gradients(loss, self.var_list)
         return self._clip_grads(grads)
@@ -371,10 +371,10 @@ class VTracePolicyGraph(LearningRateSchedule, VTracePostprocessing,
         clipped_grads = list(zip(self.grads, self.var_list))
         return clipped_grads
 
-    @override(TFPolicyGraph)
+    @override(TFPolicy)
     def extra_compute_grad_fetches(self):
         return self.stats_fetches
 
-    @override(PolicyGraph)
+    @override(Policy)
     def get_initial_state(self):
         return self.model.state_init
