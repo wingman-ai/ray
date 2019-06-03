@@ -1,27 +1,24 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import copy
 import csv
+import distutils.version
 import json
 import logging
-import os
-import yaml
-import distutils.version
 import numbers
-import GPUtil
-from threading import Thread
+import os
 import time
-import psutil
-import copy
+from collections import defaultdict
+from threading import Thread
 
+import GPUtil
 import numpy as np
+import psutil
+import yaml
 
 import ray.cloudpickle as cloudpickle
 from ray.tune.log_sync import get_syncer
-from ray.tune.result import NODE_IP, TRAINING_ITERATION, TIME_TOTAL_S, \
-    TIMESTEPS_TOTAL
+from ray.tune.result import NODE_IP, TIME_TOTAL_S, TIMESTEPS_TOTAL, TRAINING_ITERATION
 
 logger = logging.getLogger(__name__)
 
@@ -129,15 +126,15 @@ class UtilMonitor(Thread):
         super(UtilMonitor, self).__init__()
         self.stopped = False
         self.delay = delay  # Time between calls to GPUtil
-        self.values = {}
+        self.values = defaultdict(list)
         self.start()
 
     def read_utilization(self):
-        self.values.setdefault("perf/cpu", []).append(float(psutil.cpu_percent(interval=None)))
-        self.values.setdefault("perf/ram", []).append(float(getattr(psutil.virtual_memory(), 'percent')))
+        self.values["perf/cpu"].append(float(psutil.cpu_percent(interval=None)))
+        self.values["perf/ram"].append(float(getattr(psutil.virtual_memory(), 'percent')))
         for gpu in GPUtil.getGPUs():
-            self.values.setdefault("perf/gpu"+str(gpu.id), []).append(float(gpu.load))
-            self.values.setdefault("perf/vram"+str(gpu.id), []).append(float(gpu.memoryUtil))
+            self.values["perf/gpu" + str(gpu.id)].append(float(gpu.load))
+            self.values["perf/vram" + str(gpu.id)].append(float(gpu.memoryUtil))
 
     def get_data(self):
         ret_values = copy.deepcopy(self.values)
@@ -176,7 +173,7 @@ class TFLogger(Logger):
     def on_result(self, result):
         tmp = result.copy()
         for k in [
-                "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
+            "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             if k in tmp:
                 del tmp[k]  # not useful to tf log these
@@ -253,7 +250,11 @@ class UnifiedLogger(Logger):
             self._logger_cls_list = loggers
         self._sync_function = sync_function
         self._log_syncer = None
-        self.monitor = UtilMonitor(0.7)
+
+        self.use_monitor = config["log_sys_usage"]
+
+        if self.use_monitor:
+            self.monitor = UtilMonitor(0.7)
 
         Logger.__init__(self, config, logdir, upload_uri)
 
@@ -269,7 +270,8 @@ class UnifiedLogger(Logger):
             self.logdir, self.uri, sync_function=self._sync_function)
 
     def on_result(self, result):
-        result.update(self.monitor.get_data())
+        if self.use_monitor:
+            result.update(self.monitor.get_data())
         for _logger in self._loggers:
             _logger.on_result(result)
         self._log_syncer.set_worker_ip(result.get(NODE_IP))
