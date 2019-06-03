@@ -10,6 +10,11 @@ import os
 import yaml
 import distutils.version
 import numbers
+import GPUtil
+from threading import Thread
+import time
+import psutil
+import copy
 
 import numpy as np
 
@@ -119,6 +124,44 @@ def to_tf_values(result, path):
     return values
 
 
+class UtilMonitor(Thread):
+    def __init__(self, delay):
+        super(UtilMonitor, self).__init__()
+        self.stopped = False
+        self.delay = delay  # Time between calls to GPUtil
+        self.values = {}
+        self.start()
+
+    def read_utilization(self):
+        self.values.setdefault("perf/cpu", []).append(float(psutil.cpu_percent(interval=None)))
+        self.values.setdefault("perf/ram", []).append(float(getattr(psutil.virtual_memory(), 'percent')))
+        for gpu in GPUtil.getGPUs():
+            self.values.setdefault("perf/gpu"+str(gpu.id), []).append(float(gpu.load))
+            self.values.setdefault("perf/vram"+str(gpu.id), []).append(float(gpu.memoryUtil))
+
+    def get_data(self):
+        t0 = time.time()
+        ret_values = copy.deepcopy(self.values)
+
+        for key, val in self.values.items():
+            val.clear()
+
+        t1 = time.time()
+        print("Get_data:", t1-t0)
+        return {k: np.mean(v) for k, v in ret_values.items()}
+
+    def run(self):
+        while not self.stopped:
+            t0 = time.time()
+            self.read_utilization()
+            t1 = time.time()
+            print("Run: ", t1-t0)
+            time.sleep(self.delay)
+
+    def stop(self):
+        self.stopped = True
+
+
 class TFLogger(Logger):
     def _init(self):
         try:
@@ -216,6 +259,7 @@ class UnifiedLogger(Logger):
             self._logger_cls_list = loggers
         self._sync_function = sync_function
         self._log_syncer = None
+        self.monitor = UtilMonitor(0.7)
 
         Logger.__init__(self, config, logdir, upload_uri)
 
@@ -231,6 +275,7 @@ class UnifiedLogger(Logger):
             self.logdir, self.uri, sync_function=self._sync_function)
 
     def on_result(self, result):
+        result.update(self.monitor.get_data())
         for _logger in self._loggers:
             _logger.on_result(result)
         self._log_syncer.set_worker_ip(result.get(NODE_IP))
