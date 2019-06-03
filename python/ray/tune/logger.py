@@ -7,6 +7,7 @@ import json
 import logging
 import numbers
 import os
+import threading
 import time
 from collections import defaultdict
 from threading import Thread
@@ -127,21 +128,24 @@ class UtilMonitor(Thread):
         self.stopped = False
         self.delay = delay  # Time between calls to GPUtil
         self.values = defaultdict(list)
+        self.lock = threading.Lock()
         self.start()
 
     def read_utilization(self):
+        self.lock.acquire()
         self.values["perf/cpu"].append(float(psutil.cpu_percent(interval=None)))
         self.values["perf/ram"].append(float(getattr(psutil.virtual_memory(), 'percent')))
         for gpu in GPUtil.getGPUs():
             self.values["perf/gpu" + str(gpu.id)].append(float(gpu.load))
             self.values["perf/vram" + str(gpu.id)].append(float(gpu.memoryUtil))
+        self.lock.release()
 
     def get_data(self):
+        self.lock.acquire()
         ret_values = copy.deepcopy(self.values)
-
         for key, val in self.values.items():
             val.clear()
-
+        self.lock.release()
         return {k: np.mean(v) for k, v in ret_values.items()}
 
     def run(self):
