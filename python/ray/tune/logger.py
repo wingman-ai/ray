@@ -140,22 +140,16 @@ class UtilMonitor(Thread):
             self.values.setdefault("perf/vram"+str(gpu.id), []).append(float(gpu.memoryUtil))
 
     def get_data(self):
-        t0 = time.time()
         ret_values = copy.deepcopy(self.values)
 
         for key, val in self.values.items():
             val.clear()
 
-        t1 = time.time()
-        print("Get_data:", t1-t0)
         return {k: np.mean(v) for k, v in ret_values.items()}
 
     def run(self):
         while not self.stopped:
-            t0 = time.time()
             self.read_utilization()
-            t1 = time.time()
-            print("Run: ", t1-t0)
             time.sleep(self.delay)
 
     def stop(self):
