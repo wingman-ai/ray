@@ -140,6 +140,7 @@ requires = [
     "numpy >= 1.14",
     "filelock",
     "funcsigs",
+    "gputil",
     "click",
     "colorama",
     "pytest",
