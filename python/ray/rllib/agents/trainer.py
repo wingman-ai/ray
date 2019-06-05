@@ -71,6 +71,7 @@ COMMON_CONFIG = {
     },
     # Whether to attempt to continue training if a worker crashes.
     "ignore_worker_failures": False,
+    "log_sys_usage": False,
 
     # === Policy ===
     # Arguments to pass to model. See models/catalog.py for a full list of the
