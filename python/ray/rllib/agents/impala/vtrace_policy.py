@@ -306,7 +306,7 @@ class VTraceTFPolicy(LearningRateSchedule, VTracePostprocessing, TFPolicy):
         LearningRateSchedule.__init__(self, self.config["lr"],
                                       self.config["lr_schedule"])
 
-        with tf.name_scope('TFPolicyGraph.__init__'):
+        with tf.name_scope('TFPolicy.__init__'):
             self.state_values = values
             TFPolicy.__init__(
                 self,
