@@ -274,8 +274,8 @@ class VTraceTFPolicy(LearningRateSchedule, VTracePostprocessing, TFPolicy):
 
         with tf.name_scope('kl_divergence'):
             # KL divergence between worker and learner logits for debugging
-            model_dist = MultiCategorical(unpacked_outputs)
-            behaviour_dist = MultiCategorical(unpacked_behaviour_logits)
+            model_dist = MultiCategorical(self.model.outputs, output_hidden_shape)
+            behaviour_dist = MultiCategorical(behaviour_logits, output_hidden_shape)
 
             kls = model_dist.kl(behaviour_dist)
             if len(kls) > 1:
@@ -306,7 +306,7 @@ class VTraceTFPolicy(LearningRateSchedule, VTracePostprocessing, TFPolicy):
         LearningRateSchedule.__init__(self, self.config["lr"],
                                       self.config["lr_schedule"])
 
-        with tf.name_scope('TFPolicyGraph.__init__'):
+        with tf.name_scope('TFPolicy.__init__'):
             self.state_values = values
             TFPolicy.__init__(
                 self,
