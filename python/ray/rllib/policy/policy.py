@@ -122,7 +122,7 @@ class Policy(object):
             info_batch = [info]
         if episode is not None:
             episodes = [episode]
-        [action], state_out, info = self.compute_actions(
+        [action], state_out, info, *_ = self.compute_actions(
             [obs], [[s] for s in state],
             prev_action_batch=prev_action_batch,
             prev_reward_batch=prev_reward_batch,
