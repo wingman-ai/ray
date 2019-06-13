@@ -389,8 +389,13 @@ def _process_observations(base_env, policies, batch_builder_pool,
                     outputs.append(
                         m._replace(custom_metrics=episode.custom_metrics))
             else:
+
+                if hasattr(base_env.vector_env, 'envs'):
+                    env_name = base_env.vector_env.envs[0].env.name
+                else:
+                    env_name = base_env.vector_env.env.name
                 outputs.append(
-                    RolloutMetrics(episode.length, episode.total_reward,
+                    RolloutMetrics({env_name: episode.length}, {env_name: episode.total_reward},
                                    dict(episode.agent_rewards),
                                    episode.custom_metrics, {}))
         else:
@@ -630,12 +635,14 @@ def _fetch_atari_metrics(base_env):
     if not unwrapped:
         return None
     atari_out = []
+
+    env_name = base_env.vector_env.envs[0].name
     for u in unwrapped:
         monitor = get_wrapper_by_cls(u, MonitorEnv)
         if not monitor:
             return None
         for eps_rew, eps_len in monitor.next_episode_results():
-            atari_out.append(RolloutMetrics(eps_len, eps_rew, {}, {}, {}))
+            atari_out.append(RolloutMetrics({env_name: eps_len}, {env_name: eps_rew}, {}, {}, {}))
     return atari_out
 
 
