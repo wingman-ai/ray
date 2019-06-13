@@ -636,7 +636,10 @@ def _fetch_atari_metrics(base_env):
         return None
     atari_out = []
 
-    env_name = base_env.vector_env.envs[0].name
+    if hasattr(base_env.vector_env, 'envs'):
+        env_name = base_env.vector_env.envs[0].env.name
+    else:
+        env_name = base_env.vector_env.env.name
     for u in unwrapped:
         monitor = get_wrapper_by_cls(u, MonitorEnv)
         if not monitor:
