@@ -477,8 +477,10 @@ class Trial(object):
             pieces.append("{} ts".format(self.last_result[TIMESTEPS_TOTAL]))
 
         if self.last_result.get(EPISODE_REWARD_MEAN) is not None:
-            pieces.append("{} rew".format(
-                format(self.last_result[EPISODE_REWARD_MEAN], ".3g")))
+            piece = []
+            for key, val in self.last_result[EPISODE_REWARD_MEAN].items():
+                piece.append(f"{key} {val:.3g}")
+            pieces.append("| Rewards: " + " ".join(piece))
 
         if self.last_result.get(MEAN_LOSS) is not None:
             pieces.append("{} loss".format(
