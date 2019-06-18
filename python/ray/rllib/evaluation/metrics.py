@@ -94,14 +94,18 @@ def summarize_episodes(episodes, new_episodes, num_dropped):
     episodes, estimates = _partition(episodes)
     new_episodes, _ = _partition(new_episodes)
 
-    episode_rewards = []
-    episode_lengths = []
+    all_envs_rewards = collections.defaultdict(list)
+    all_envs_lengths = collections.defaultdict(list)
     policy_rewards = collections.defaultdict(list)
     custom_metrics = collections.defaultdict(list)
     perf_stats = collections.defaultdict(list)
+
     for episode in episodes:
-        episode_lengths.append(episode.episode_length)
-        episode_rewards.append(episode.episode_reward)
+        for key, val in episode.episode_reward.items():
+            all_envs_rewards[key].append(val)
+        for key, val in episode.episode_length.items():
+            all_envs_lengths[key].append(val)
+
         for k, v in episode.custom_metrics.items():
             custom_metrics[k].append(v)
         for k, v in episode.perf_stats.items():
@@ -109,14 +113,18 @@ def summarize_episodes(episodes, new_episodes, num_dropped):
         for (_, policy_id), reward in episode.agent_rewards.items():
             if policy_id != DEFAULT_POLICY_ID:
                 policy_rewards[policy_id].append(reward)
-    if episode_rewards:
-        min_reward = min(episode_rewards)
-        max_reward = max(episode_rewards)
-    else:
-        min_reward = float("nan")
-        max_reward = float("nan")
-    avg_reward = np.mean(episode_rewards)
-    avg_length = np.mean(episode_lengths)
+
+    min_reward = {}
+    max_reward = {}
+    avg_reward = {}
+    avg_length = {}
+    for key, val in all_envs_rewards.items():
+        min_reward[key] = min(val) if val else float("nan")
+        max_reward[key] = max(val) if val else float("nan")
+        avg_reward[key] = np.mean(val)
+
+    for key, val in all_envs_lengths.items():
+        avg_length[key] = np.mean(val)
 
     for policy_id, rewards in policy_rewards.copy().items():
         policy_rewards[policy_id] = np.mean(rewards)
