@@ -9,7 +9,6 @@ import pickle
 import tempfile
 import time
 from datetime import datetime
-from types import FunctionType
 
 import ray
 import six
@@ -17,8 +16,6 @@ from ray.exceptions import RayError
 from ray.rllib.evaluation.metrics import collect_metrics
 from ray.rllib.evaluation.worker_set import WorkerSet
 from ray.rllib.models import MODEL_DEFAULTS
-from ray.rllib.offline import NoopOutput, JsonReader, MixedInput, JsonWriter, \
-    ShuffledInput
 from ray.rllib.optimizers.policy_optimizer import PolicyOptimizer
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.utils import FilterManager, deep_update, merge_dicts
@@ -72,6 +69,9 @@ COMMON_CONFIG = {
     # Whether to attempt to continue training if a worker crashes.
     "ignore_worker_failures": False,
     "log_sys_usage": False,
+    # Execute TF loss functions in eager mode. This is currently experimental
+    # and only really works with the basic PG algorithm.
+    "use_eager": False,
 
     # === Policy ===
     # Arguments to pass to model. See models/catalog.py for a full list of the
@@ -196,6 +196,9 @@ COMMON_CONFIG = {
     "remote_env_batch_wait_ms": 0,
     # Minimum time per iteration
     "min_iter_time_s": 0,
+    # Minimum env steps to optimize for per train call. This value does
+    # not affect learning, only the length of iterations.
+    "timesteps_per_iteration": 0,
 
     # === Offline Datasets ===
     # Specify how to generate experiences:
@@ -509,6 +512,7 @@ class Trainer(Trainable):
 
         logger.info("Evaluating current policy for {} episodes".format(
             self.config["evaluation_num_episodes"]))
+        self._before_evaluate()
         self.evaluation_workers.local_worker().restore(
             self.workers.local_worker().save())
         for _ in range(self.config["evaluation_num_episodes"]):
@@ -516,6 +520,11 @@ class Trainer(Trainable):
 
         metrics = collect_metrics(self.evaluation_workers.local_worker())
         return {"evaluation": metrics}
+
+    @DeveloperAPI
+    def _before_evaluate(self):
+        """Pre-evaluation callback."""
+        pass
 
     @PublicAPI
     def compute_action(self,

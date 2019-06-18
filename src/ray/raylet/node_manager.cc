@@ -99,9 +99,9 @@ NodeManager::NodeManager(boost::asio::io_service &io_service,
       lineage_cache_(gcs_client_->client_table().GetLocalClientId(),
                      gcs_client_->raylet_task_table(), gcs_client_->raylet_task_table(),
                      config.max_lineage_size),
-      remote_clients_(),
-      remote_server_connections_(),
-      actor_registry_() {
+      actor_registry_(),
+      node_manager_server_(config.node_manager_port, io_service, *this),
+      client_call_manager_(io_service) {
   RAY_CHECK(heartbeat_period_.count() > 0);
   // Initialize the resource map with own cluster resource configuration.
   ClientID local_client_id = gcs_client_->client_table().GetLocalClientId();
@@ -117,6 +117,8 @@ NodeManager::NodeManager(boost::asio::io_service &io_service,
       [this](const ObjectID &object_id) { HandleObjectMissing(object_id); }));
 
   RAY_ARROW_CHECK_OK(store_client_.Connect(config.store_socket_name.c_str()));
+  // Run the node manger rpc server.
+  node_manager_server_.Run();
 }
 
 ray::Status NodeManager::RegisterGcs() {
@@ -179,45 +181,42 @@ ray::Status NodeManager::RegisterGcs() {
   };
   gcs_client_->client_table().RegisterClientAddedCallback(node_manager_client_added);
   // Register a callback on the client table for removed clients.
-  auto node_manager_client_removed = [this](
-      gcs::AsyncGcsClient *client, const UniqueID &id, const ClientTableDataT &data) {
-    ClientRemoved(data);
-  };
+  auto node_manager_client_removed =
+      [this](gcs::AsyncGcsClient *client, const UniqueID &id,
+             const ClientTableDataT &data) { ClientRemoved(data); };
   gcs_client_->client_table().RegisterClientRemovedCallback(node_manager_client_removed);
 
   // Register a callback on the client table for resource create/update requests
-  auto node_manager_resource_createupdated = [this](
-      gcs::AsyncGcsClient *client, const UniqueID &id, const ClientTableDataT &data) {
-    ResourceCreateUpdated(data);
-  };
+  auto node_manager_resource_createupdated =
+      [this](gcs::AsyncGcsClient *client, const UniqueID &id,
+             const ClientTableDataT &data) { ResourceCreateUpdated(data); };
   gcs_client_->client_table().RegisterResourceCreateUpdatedCallback(
       node_manager_resource_createupdated);
 
   // Register a callback on the client table for resource delete requests
-  auto node_manager_resource_deleted = [this](
-      gcs::AsyncGcsClient *client, const UniqueID &id, const ClientTableDataT &data) {
-    ResourceDeleted(data);
-  };
+  auto node_manager_resource_deleted =
+      [this](gcs::AsyncGcsClient *client, const UniqueID &id,
+             const ClientTableDataT &data) { ResourceDeleted(data); };
   gcs_client_->client_table().RegisterResourceDeletedCallback(
       node_manager_resource_deleted);
 
   // Subscribe to heartbeat batches from the monitor.
-  const auto &heartbeat_batch_added = [this](
-      gcs::AsyncGcsClient *client, const ClientID &id,
-      const HeartbeatBatchTableDataT &heartbeat_batch) {
-    HeartbeatBatchAdded(heartbeat_batch);
-  };
+  const auto &heartbeat_batch_added =
+      [this](gcs::AsyncGcsClient *client, const ClientID &id,
+             const HeartbeatBatchTableDataT &heartbeat_batch) {
+        HeartbeatBatchAdded(heartbeat_batch);
+      };
   RAY_RETURN_NOT_OK(gcs_client_->heartbeat_batch_table().Subscribe(
       DriverID::Nil(), ClientID::Nil(), heartbeat_batch_added,
       /*subscribe_callback=*/nullptr,
       /*done_callback=*/nullptr));
 
   // Subscribe to driver table updates.
-  const auto driver_table_handler = [this](
-      gcs::AsyncGcsClient *client, const DriverID &client_id,
-      const std::vector<DriverTableDataT> &driver_data) {
-    HandleDriverTableUpdate(client_id, driver_data);
-  };
+  const auto driver_table_handler =
+      [this](gcs::AsyncGcsClient *client, const DriverID &client_id,
+             const std::vector<DriverTableDataT> &driver_data) {
+        HandleDriverTableUpdate(client_id, driver_data);
+      };
   RAY_RETURN_NOT_OK(gcs_client_->driver_table().Subscribe(
       DriverID::Nil(), ClientID::Nil(), driver_table_handler, nullptr));
 
@@ -369,64 +368,22 @@ void NodeManager::ClientAdded(const ClientTableDataT &client_data) {
     return;
   }
 
-  // TODO(atumanov): make remote client lookup O(1)
-  if (std::find(remote_clients_.begin(), remote_clients_.end(), client_id) ==
-      remote_clients_.end()) {
-    remote_clients_.push_back(client_id);
-  } else {
-    // NodeManager connection to this client was already established.
-    RAY_LOG(DEBUG) << "Received a new client connection that already exists: "
+  auto entry = remote_node_manager_clients_.find(client_id);
+  if (entry != remote_node_manager_clients_.end()) {
+    RAY_LOG(DEBUG) << "Received notification of a new client that already exists: "
                    << client_id;
     return;
   }
 
-  // Establish a new NodeManager connection to this GCS client.
-  auto status = ConnectRemoteNodeManager(client_id, client_data.node_manager_address,
-                                         client_data.node_manager_port);
-  if (!status.ok()) {
-    // This is not a fatal error for raylet, but it should not happen.
-    // We need to broadcase this message.
-    std::string type = "raylet_connection_error";
-    std::ostringstream error_message;
-    error_message << "Failed to connect to ray node " << client_id
-                  << " with status: " << status.ToString()
-                  << ". This may be since the node was recently removed.";
-    // We use the nil DriverID to broadcast the message to all drivers.
-    RAY_CHECK_OK(gcs_client_->error_table().PushErrorToDriver(
-        DriverID::Nil(), type, error_message.str(), current_time_ms()));
-    return;
-  }
+  // Initialize a rpc client to the new node manager.
+  std::unique_ptr<rpc::NodeManagerClient> client(
+      new rpc::NodeManagerClient(client_data.node_manager_address,
+                                 client_data.node_manager_port, client_call_manager_));
+  remote_node_manager_clients_.emplace(client_id, std::move(client));
 
   ResourceSet resources_total(client_data.resources_total_label,
                               client_data.resources_total_capacity);
   cluster_resource_map_.emplace(client_id, SchedulingResources(resources_total));
-}
-
-ray::Status NodeManager::ConnectRemoteNodeManager(const ClientID &client_id,
-                                                  const std::string &client_address,
-                                                  int32_t client_port) {
-  // Establish a new NodeManager connection to this GCS client.
-  RAY_LOG(INFO) << "[ConnectClient] Trying to connect to client " << client_id << " at "
-                << client_address << ":" << client_port;
-
-  boost::asio::ip::tcp::socket socket(io_service_);
-  RAY_RETURN_NOT_OK(TcpConnect(socket, client_address, client_port));
-
-  // The client is connected, now send a connect message to remote node manager.
-  auto server_conn = TcpServerConnection::Create(std::move(socket));
-
-  // Prepare client connection info buffer
-  flatbuffers::FlatBufferBuilder fbb;
-  auto message = protocol::CreateConnectClient(fbb, to_flatbuf(fbb, client_id_));
-  fbb.Finish(message);
-  // Send synchronously.
-  // TODO(swang): Make this a WriteMessageAsync.
-  RAY_RETURN_NOT_OK(server_conn->WriteMessage(
-      static_cast<int64_t>(protocol::MessageType::ConnectClient), fbb.GetSize(),
-      fbb.GetBufferPointer()));
-
-  remote_server_connections_.emplace(client_id, std::move(server_conn));
-  return ray::Status::OK();
 }
 
 void NodeManager::ClientRemoved(const ClientTableDataT &client_data) {
@@ -443,17 +400,13 @@ void NodeManager::ClientRemoved(const ClientTableDataT &client_data) {
   // check that it is actually removed, or log a warning otherwise, but that may
   // not be necessary.
 
-  // Remove the client from the list of remote clients.
-  std::remove(remote_clients_.begin(), remote_clients_.end(), client_id);
-
   // Remove the client from the resource map.
   cluster_resource_map_.erase(client_id);
 
-  // Remove the remote server connection.
-  const auto connection_entry = remote_server_connections_.find(client_id);
-  if (connection_entry != remote_server_connections_.end()) {
-    connection_entry->second->Close();
-    remote_server_connections_.erase(connection_entry);
+  // Remove the node manager client.
+  const auto client_entry = remote_node_manager_clients_.find(client_id);
+  if (client_entry != remote_node_manager_clients_.end()) {
+    remote_node_manager_clients_.erase(client_entry);
   } else {
     RAY_LOG(WARNING) << "Received ClientRemoved callback for an unknown client "
                      << client_id << ".";
@@ -475,6 +428,11 @@ void NodeManager::ClientRemoved(const ClientTableDataT &client_data) {
   // Notify the object directory that the client has been removed so that it
   // can remove it from any cached locations.
   object_directory_->HandleClientRemoved(client_id);
+
+  // Flush all uncommitted tasks from the local lineage cache. This is to
+  // guarantee that all tasks get flushed eventually, in case one of the tasks
+  // in our local cache was supposed to be flushed by the node that died.
+  lineage_cache_.FlushAllUncommittedTasks();
 }
 
 void NodeManager::ResourceCreateUpdated(const ClientTableDataT &client_data) {
@@ -693,11 +651,6 @@ void NodeManager::HandleActorStateTransition(const ActorID &actor_id,
     // known.
     auto created_actor_methods = local_queues_.RemoveTasks(created_actor_method_ids);
     for (const auto &method : created_actor_methods) {
-      if (!lineage_cache_.RemoveWaitingTask(method.GetTaskSpecification().TaskId())) {
-        RAY_LOG(WARNING) << "Task " << method.GetTaskSpecification().TaskId()
-                         << " already removed from the lineage cache. This is most "
-                            "likely due to reconstruction.";
-      }
       // Maintain the invariant that if a task is in the
       // MethodsWaitingForActorCreation queue, then it is subscribed to its
       // respective actor creation task. Since the actor location is now known,
@@ -1244,41 +1197,24 @@ void NodeManager::ProcessNewNodeManager(TcpClientConnection &node_manager_client
   node_manager_client.ProcessMessages();
 }
 
-void NodeManager::ProcessNodeManagerMessage(TcpClientConnection &node_manager_client,
-                                            int64_t message_type,
-                                            const uint8_t *message_data) {
-  const auto message_type_value = static_cast<protocol::MessageType>(message_type);
-  RAY_LOG(DEBUG) << "[NodeManager] Message "
-                 << protocol::EnumNameMessageType(message_type_value) << "("
-                 << message_type << ") from node manager";
-  switch (message_type_value) {
-  case protocol::MessageType::ConnectClient: {
-    auto message = flatbuffers::GetRoot<protocol::ConnectClient>(message_data);
-    auto client_id = from_flatbuf<ClientID>(*message->client_id());
-    node_manager_client.SetClientID(client_id);
-  } break;
-  case protocol::MessageType::ForwardTaskRequest: {
-    auto message = flatbuffers::GetRoot<protocol::ForwardTaskRequest>(message_data);
-    TaskID task_id = from_flatbuf<TaskID>(*message->task_id());
-
-    Lineage uncommitted_lineage(*message);
-    const Task &task = uncommitted_lineage.GetEntry(task_id)->TaskData();
-    RAY_LOG(DEBUG) << "Received forwarded task " << task.GetTaskSpecification().TaskId()
-                   << " on node " << gcs_client_->client_table().GetLocalClientId()
-                   << " spillback=" << task.GetTaskExecutionSpec().NumForwards();
-    SubmitTask(task, uncommitted_lineage, /* forwarded = */ true);
-  } break;
-  case protocol::MessageType::DisconnectClient: {
-    // TODO(rkn): We need to do some cleanup here.
-    RAY_LOG(DEBUG) << "Received disconnect message from remote node manager. "
-                   << "We need to do some cleanup here.";
-    // Do not process any more messages from this node manager.
-    return;
-  } break;
-  default:
-    RAY_LOG(FATAL) << "Received unexpected message type " << message_type;
+void NodeManager::HandleForwardTask(const rpc::ForwardTaskRequest &request,
+                                    rpc::ForwardTaskReply *reply,
+                                    rpc::RequestDoneCallback done_callback) {
+  // Get the forwarded task and its uncommitted lineage from the request.
+  TaskID task_id = TaskID::FromBinary(request.task_id());
+  Lineage uncommitted_lineage;
+  for (int i = 0; i < request.uncommitted_tasks_size(); i++) {
+    const std::string &task_message = request.uncommitted_tasks(i);
+    const Task task(*flatbuffers::GetRoot<protocol::Task>(
+        reinterpret_cast<const uint8_t *>(task_message.data())));
+    RAY_CHECK(uncommitted_lineage.SetEntry(std::move(task), GcsStatus::UNCOMMITTED));
   }
-  node_manager_client.ProcessMessages();
+  const Task &task = uncommitted_lineage.GetEntry(task_id)->TaskData();
+  RAY_LOG(DEBUG) << "Received forwarded task " << task.GetTaskSpecification().TaskId()
+                 << " on node " << gcs_client_->client_table().GetLocalClientId()
+                 << " spillback=" << task.GetTaskExecutionSpec().NumForwards();
+  SubmitTask(task, uncommitted_lineage, /* forwarded = */ true);
+  done_callback(Status::OK());
 }
 
 void NodeManager::ProcessSetResourceRequest(
@@ -1466,10 +1402,6 @@ void NodeManager::TreatTaskAsFailed(const Task &task, const ErrorType &error_typ
           current_time_ms()));
     }
   }
-  // A task failing is equivalent to assigning and finishing the task, so clean
-  // up any leftover state as for any task dispatched and removed from the
-  // local queue.
-  lineage_cache_.AddReadyTask(task);
   task_dependency_manager_.TaskCanceled(spec.TaskId());
   // Notify the task dependency manager that we no longer need this task's
   // object dependencies. TODO(swang): Ideally, we would check the return value
@@ -1538,10 +1470,14 @@ void NodeManager::SubmitTask(const Task &task, const Lineage &uncommitted_lineag
   }
 
   // Add the task and its uncommitted lineage to the lineage cache.
-  if (!lineage_cache_.AddWaitingTask(task, uncommitted_lineage)) {
-    RAY_LOG(WARNING)
-        << "Task " << task_id
-        << " already in lineage cache. This is most likely due to reconstruction.";
+  if (forwarded) {
+    lineage_cache_.AddUncommittedLineage(task_id, uncommitted_lineage);
+  } else {
+    if (!lineage_cache_.CommitTask(task)) {
+      RAY_LOG(WARNING)
+          << "Task " << task_id
+          << " already committed to the GCS. This is most likely due to reconstruction.";
+    }
   }
 
   if (spec.IsActorTask()) {
@@ -1814,9 +1750,9 @@ bool NodeManager::AssignTask(const Task &task) {
   cluster_resource_map_[my_client_id].Acquire(spec.GetRequiredResources());
 
   if (spec.IsActorCreationTask()) {
-    // Check that we are not placing an actor creation task on a node with 0 CPUs.
-    RAY_CHECK(cluster_resource_map_[my_client_id].GetTotalResources().GetResourceMap().at(
-                  kCPU_ResourceLabel) != 0);
+    // Check that the actor's placement resource requirements are satisfied.
+    RAY_CHECK(spec.GetRequiredPlacementResources().IsSubset(
+        cluster_resource_map_[my_client_id].GetTotalResources()));
     worker->SetLifetimeResourceIds(acquired_resources);
   } else {
     worker->SetTaskResourceIds(acquired_resources);
@@ -1869,32 +1805,14 @@ bool NodeManager::AssignTask(const Task &task) {
               actor_entry->second.AddHandle(new_handle_id, execution_dependency);
             }
 
-            // If the task was an actor task, then record this execution to
-            // guarantee consistency in the case of reconstruction.
-            auto execution_dependency = actor_entry->second.GetExecutionDependency();
-            // The execution dependency is initialized to the actor creation task's
-            // return value, and is subsequently updated to the assigned tasks'
-            // return values, so it should never be nil.
-            RAY_CHECK(!execution_dependency.IsNil());
-            // Update the task's execution dependencies to reflect the actual
-            // execution order, to support deterministic reconstruction.
-            // NOTE(swang): The update of an actor task's execution dependencies is
-            // performed asynchronously. This means that if this node manager dies,
-            // we may lose updates that are in flight to the task table. We only
-            // guarantee deterministic reconstruction ordering for tasks whose
-            // updates are reflected in the task table.
-            // (SetExecutionDependencies takes a non-const so copy task in a
-            //  on-const variable.)
-            assigned_task.SetExecutionDependencies({execution_dependency});
+            // TODO(swang): For actors with multiple actor handles, to
+            // guarantee that tasks are replayed in the same order after a
+            // failure, we must update the task's execution dependency to be
+            // the actor's current execution dependency.
           } else {
             RAY_CHECK(spec.NewActorHandles().empty());
           }
 
-          // We started running the task, so the task is ready to write to GCS.
-          if (!lineage_cache_.AddReadyTask(assigned_task)) {
-            RAY_LOG(WARNING) << "Task " << spec.TaskId() << " already in lineage cache."
-                             << " This is most likely due to reconstruction.";
-          }
           // Mark the task as running.
           // (See design_docs/task_states.rst for the state transition diagram.)
           local_queues_.QueueTasks({assigned_task}, TaskState::RUNNING);
@@ -2166,7 +2084,7 @@ void NodeManager::HandleObjectLocal(const ObjectID &object_id) {
   // Notify the task dependency manager that this object is local.
   const auto ready_task_ids = task_dependency_manager_.HandleObjectLocal(object_id);
   RAY_LOG(DEBUG) << "Object local " << object_id << ", "
-                 << " on " << gcs_client_->client_table().GetLocalClientId()
+                 << " on " << gcs_client_->client_table().GetLocalClientId() << ", "
                  << ready_task_ids.size() << " tasks ready";
   // Transition the tasks whose dependencies are now fulfilled to the ready state.
   if (ready_task_ids.size() > 0) {
@@ -2220,61 +2138,70 @@ void NodeManager::ForwardTaskOrResubmit(const Task &task,
   /// TODO(rkn): Should we check that the node manager is remote and not local?
   /// TODO(rkn): Should we check if the remote node manager is known to be dead?
   // Attempt to forward the task.
-  ForwardTask(task, node_manager_id, [this, node_manager_id](ray::Status error,
-                                                             const Task &task) {
-    const TaskID task_id = task.GetTaskSpecification().TaskId();
-    RAY_LOG(INFO) << "Failed to forward task " << task_id << " to node manager "
-                  << node_manager_id;
+  ForwardTask(
+      task, node_manager_id,
+      [this, node_manager_id](ray::Status error, const Task &task) {
+        const TaskID task_id = task.GetTaskSpecification().TaskId();
+        RAY_LOG(INFO) << "Failed to forward task " << task_id << " to node manager "
+                      << node_manager_id;
 
-    // Mark the failed task as pending to let other raylets know that we still
-    // have the task. TaskDependencyManager::TaskPending() is assumed to be
-    // idempotent.
-    task_dependency_manager_.TaskPending(task);
+        // Mark the failed task as pending to let other raylets know that we still
+        // have the task. TaskDependencyManager::TaskPending() is assumed to be
+        // idempotent.
+        task_dependency_manager_.TaskPending(task);
 
-    // Actor tasks can only be executed at the actor's location, so they are
-    // retried after a timeout. All other tasks that fail to be forwarded are
-    // deemed to be placeable again.
-    if (task.GetTaskSpecification().IsActorTask()) {
-      // The task is for an actor on another node.  Create a timer to resubmit
-      // the task in a little bit. TODO(rkn): Really this should be a
-      // unique_ptr instead of a shared_ptr. However, it's a little harder to
-      // move unique_ptrs into lambdas.
-      auto retry_timer = std::make_shared<boost::asio::deadline_timer>(io_service_);
-      auto retry_duration = boost::posix_time::milliseconds(
-          RayConfig::instance().node_manager_forward_task_retry_timeout_milliseconds());
-      retry_timer->expires_from_now(retry_duration);
-      retry_timer->async_wait(
-          [this, task_id, retry_timer](const boost::system::error_code &error) {
-            // Timer killing will receive the boost::asio::error::operation_aborted,
-            // we only handle the timeout event.
-            RAY_CHECK(!error);
-            RAY_LOG(INFO) << "Resubmitting task " << task_id
-                          << " because ForwardTask failed.";
-            // Remove the RESUBMITTED task from the SWAP queue.
-            TaskState state;
-            const auto task = local_queues_.RemoveTask(task_id, &state);
-            RAY_CHECK(state == TaskState::SWAP);
-            // Submit the task again.
-            SubmitTask(task, Lineage());
-          });
-      // Temporarily move the RESUBMITTED task to the SWAP queue while the
-      // timer is active.
-      local_queues_.QueueTasks({task}, TaskState::SWAP);
-      // Remove the task from the lineage cache. The task will get added back
-      // once it is resubmitted.
-      lineage_cache_.RemoveWaitingTask(task_id);
-    } else {
-      // The task is not for an actor and may therefore be placed on another
-      // node immediately. Send it to the scheduling policy to be placed again.
-      local_queues_.QueueTasks({task}, TaskState::PLACEABLE);
-      ScheduleTasks(cluster_resource_map_);
-    }
-  });
+        // Actor tasks can only be executed at the actor's location, so they are
+        // retried after a timeout. All other tasks that fail to be forwarded are
+        // deemed to be placeable again.
+        if (task.GetTaskSpecification().IsActorTask()) {
+          // The task is for an actor on another node.  Create a timer to resubmit
+          // the task in a little bit. TODO(rkn): Really this should be a
+          // unique_ptr instead of a shared_ptr. However, it's a little harder to
+          // move unique_ptrs into lambdas.
+          auto retry_timer = std::make_shared<boost::asio::deadline_timer>(io_service_);
+          auto retry_duration = boost::posix_time::milliseconds(
+              RayConfig::instance()
+                  .node_manager_forward_task_retry_timeout_milliseconds());
+          retry_timer->expires_from_now(retry_duration);
+          retry_timer->async_wait(
+              [this, task_id, retry_timer](const boost::system::error_code &error) {
+                // Timer killing will receive the boost::asio::error::operation_aborted,
+                // we only handle the timeout event.
+                RAY_CHECK(!error);
+                RAY_LOG(INFO) << "Resubmitting task " << task_id
+                              << " because ForwardTask failed.";
+                // Remove the RESUBMITTED task from the SWAP queue.
+                TaskState state;
+                const auto task = local_queues_.RemoveTask(task_id, &state);
+                RAY_CHECK(state == TaskState::SWAP);
+                // Submit the task again.
+                SubmitTask(task, Lineage());
+              });
+          // Temporarily move the RESUBMITTED task to the SWAP queue while the
+          // timer is active.
+          local_queues_.QueueTasks({task}, TaskState::SWAP);
+        } else {
+          // The task is not for an actor and may therefore be placed on another
+          // node immediately. Send it to the scheduling policy to be placed again.
+          local_queues_.QueueTasks({task}, TaskState::PLACEABLE);
+          ScheduleTasks(cluster_resource_map_);
+        }
+      });
 }
 
 void NodeManager::ForwardTask(
     const Task &task, const ClientID &node_id,
     const std::function<void(const ray::Status &, const Task &)> &on_error) {
+  // Lookup node manager client for this node_id and use it to send the request.
+  auto client_entry = remote_node_manager_clients_.find(node_id);
+  if (client_entry == remote_node_manager_clients_.end()) {
+    // TODO(atumanov): caller must handle failure to ensure tasks are not lost.
+    RAY_LOG(INFO) << "No node manager client found for GCS client id " << node_id;
+    on_error(ray::Status::IOError("Node manager client not found"), task);
+    return;
+  }
+  auto &client = client_entry->second;
+
   const auto &spec = task.GetTaskSpecification();
   auto task_id = spec.TaskId();
 
@@ -2294,81 +2221,67 @@ void NodeManager::ForwardTask(
   // Increment forward count for the forwarded task.
   lineage_cache_entry_task.IncrementNumForwards();
 
-  flatbuffers::FlatBufferBuilder fbb;
-  auto request = uncommitted_lineage.ToFlatbuffer(fbb, task_id);
-  fbb.Finish(request);
-
   RAY_LOG(DEBUG) << "Forwarding task " << task_id << " from "
                  << gcs_client_->client_table().GetLocalClientId() << " to " << node_id
                  << " spillback="
                  << lineage_cache_entry_task.GetTaskExecutionSpec().NumForwards();
 
-  // Lookup remote server connection for this node_id and use it to send the request.
-  auto it = remote_server_connections_.find(node_id);
-  if (it == remote_server_connections_.end()) {
-    // TODO(atumanov): caller must handle failure to ensure tasks are not lost.
-    RAY_LOG(INFO) << "No NodeManager connection found for GCS client id " << node_id;
-    on_error(ray::Status::IOError("NodeManager connection not found"), task);
-    return;
+  // Prepare the request message.
+  rpc::ForwardTaskRequest request;
+  request.set_task_id(task_id.Binary());
+  for (auto &entry : uncommitted_lineage.GetEntries()) {
+    request.add_uncommitted_tasks(entry.second.TaskData().Serialize());
   }
-  auto &server_conn = it->second;
+
   // Move the FORWARDING task to the SWAP queue so that we remember that we
   // have it queued locally. Once the ForwardTaskRequest has been sent, the
   // task will get re-queued, depending on whether the message succeeded or
   // not.
   local_queues_.QueueTasks({task}, TaskState::SWAP);
-  server_conn->WriteMessageAsync(
-      static_cast<int64_t>(protocol::MessageType::ForwardTaskRequest), fbb.GetSize(),
-      fbb.GetBufferPointer(), [this, on_error, task_id, node_id](ray::Status status) {
-        // Remove the FORWARDING task from the SWAP queue.
-        TaskState state;
-        const auto task = local_queues_.RemoveTask(task_id, &state);
-        RAY_CHECK(state == TaskState::SWAP);
+  client->ForwardTask(request, [this, on_error, task_id, node_id](
+                                   Status status, const rpc::ForwardTaskReply &reply) {
+    // Remove the FORWARDING task from the SWAP queue.
+    TaskState state;
+    const auto task = local_queues_.RemoveTask(task_id, &state);
+    RAY_CHECK(state == TaskState::SWAP);
 
-        if (status.ok()) {
-          const auto &spec = task.GetTaskSpecification();
-          // If we were able to forward the task, remove the forwarded task from the
-          // lineage cache since the receiving node is now responsible for writing
-          // the task to the GCS.
-          if (!lineage_cache_.RemoveWaitingTask(task_id)) {
-            RAY_LOG(WARNING) << "Task " << task_id << " already removed from the lineage"
-                             << " cache. This is most likely due to reconstruction.";
-          } else {
-            // Mark as forwarded so that the task and its lineage is not
-            // re-forwarded in the future to the receiving node.
-            lineage_cache_.MarkTaskAsForwarded(task_id, node_id);
-          }
+    if (status.ok()) {
+      const auto &spec = task.GetTaskSpecification();
+      // Mark as forwarded so that the task and its lineage are not
+      // re-forwarded in the future to the receiving node.
+      lineage_cache_.MarkTaskAsForwarded(task_id, node_id);
 
-          // Notify the task dependency manager that we are no longer responsible
-          // for executing this task.
-          task_dependency_manager_.TaskCanceled(task_id);
-          // Preemptively push any local arguments to the receiving node. For now, we
-          // only do this with actor tasks, since actor tasks must be executed by a
-          // specific process and therefore have affinity to the receiving node.
-          if (spec.IsActorTask()) {
-            // Iterate through the object's arguments. NOTE(swang): We do not include
-            // the execution dependencies here since those cannot be transferred
-            // between nodes.
-            for (int i = 0; i < spec.NumArgs(); ++i) {
-              int count = spec.ArgIdCount(i);
-              for (int j = 0; j < count; j++) {
-                ObjectID argument_id = spec.ArgId(i, j);
-                // If the argument is local, then push it to the receiving node.
-                if (task_dependency_manager_.CheckObjectLocal(argument_id)) {
-                  object_manager_.Push(argument_id, node_id);
-                }
-              }
+      // Notify the task dependency manager that we are no longer responsible
+      // for executing this task.
+      task_dependency_manager_.TaskCanceled(task_id);
+      // Preemptively push any local arguments to the receiving node. For now, we
+      // only do this with actor tasks, since actor tasks must be executed by a
+      // specific process and therefore have affinity to the receiving node.
+      if (spec.IsActorTask()) {
+        // Iterate through the object's arguments. NOTE(swang): We do not include
+        // the execution dependencies here since those cannot be transferred
+        // between nodes.
+        for (int i = 0; i < spec.NumArgs(); ++i) {
+          int count = spec.ArgIdCount(i);
+          for (int j = 0; j < count; j++) {
+            ObjectID argument_id = spec.ArgId(i, j);
+            // If the argument is local, then push it to the receiving node.
+            if (task_dependency_manager_.CheckObjectLocal(argument_id)) {
+              object_manager_.Push(argument_id, node_id);
             }
           }
-        } else {
-          on_error(status, task);
         }
-      });
+      }
+    } else {
+      on_error(status, task);
+    }
+  });
 }
 
 void NodeManager::DumpDebugState() const {
   std::fstream fs;
-  fs.open(temp_dir_ + "/debug_state.txt", std::fstream::out | std::fstream::trunc);
+  fs.open(initial_config_.session_dir + "/debug_state.txt",
+          std::fstream::out | std::fstream::trunc);
   fs << DebugString();
   fs.close();
 }
@@ -2397,10 +2310,11 @@ std::string NodeManager::DebugString() const {
   result << "\n- num dead actors: " << statistical_data.dead_actors;
   result << "\n- max num handles: " << statistical_data.max_num_handles;
 
-  result << "\nRemoteConnections:";
-  for (auto &pair : remote_server_connections_) {
-    result << "\n" << pair.first.Hex() << ": " << pair.second->DebugString();
+  result << "\nRemote node manager clients: ";
+  for (const auto &entry : remote_node_manager_clients_) {
+    result << "\n" << entry.first;
   }
+
   result << "\nDebugString() time ms: " << (current_time_ms() - now_ms);
   return result.str();
 }
