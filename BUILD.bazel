@@ -1,11 +1,36 @@
 # Bazel build
 # C/C++ documentation: https://docs.bazel.build/versions/master/be/c-cpp.html
 
+load("@com_github_grpc_grpc//bazel:grpc_build_system.bzl", "grpc_proto_library")
 load("@com_github_google_flatbuffers//:build_defs.bzl", "flatbuffer_cc_library")
 load("@//bazel:ray.bzl", "flatbuffer_py_library")
 load("@//bazel:cython_library.bzl", "pyx_library")
 
 COPTS = ["-DRAY_USE_GLOG"]
+
+# Node manager gRPC lib.
+grpc_proto_library(
+    name = "node_manager_grpc_lib",
+    srcs = ["src/ray/protobuf/node_manager.proto"],
+)
+
+# Node manager server and client.
+cc_library(
+    name = "node_manager_rpc_lib",
+    srcs = glob([
+        "src/ray/rpc/*.cc",
+    ]),
+    hdrs = glob([
+        "src/ray/rpc/*.h",
+    ]),
+    copts = COPTS,
+    deps = [
+        ":node_manager_grpc_lib",
+        ":ray_common",
+        "@boost//:asio",
+        "@com_github_grpc_grpc//:grpc++",
+    ],
+)
 
 cc_binary(
     name = "raylet",
@@ -89,6 +114,7 @@ cc_library(
         ":gcs",
         ":gcs_fbs",
         ":node_manager_fbs",
+        ":node_manager_rpc_lib",
         ":object_manager",
         ":ray_common",
         ":ray_util",
@@ -111,13 +137,18 @@ cc_library(
     srcs = glob(
         [
             "src/ray/core_worker/*.cc",
+            "src/ray/core_worker/store_provider/*.cc",
+            "src/ray/core_worker/transport/*.cc",
         ],
         exclude = [
             "src/ray/core_worker/*_test.cc",
+            "src/ray/core_worker/mock_worker.cc",
         ],
     ),
     hdrs = glob([
         "src/ray/core_worker/*.h",
+        "src/ray/core_worker/store_provider/*.h",
+        "src/ray/core_worker/transport/*.h",
     ]),
     copts = COPTS,
     deps = [
@@ -127,7 +158,15 @@ cc_library(
     ],
 )
 
-# This test is run by src/ray/test/run_core_worker_tests.sh
+cc_binary(
+    name = "mock_worker",
+    srcs = ["src/ray/core_worker/mock_worker.cc"],
+    copts = COPTS,
+    deps = [
+        ":core_worker_lib",
+    ],
+)
+
 cc_binary(
     name = "core_worker_test",
     srcs = ["src/ray/core_worker/core_worker_test.cc"],
@@ -535,7 +574,7 @@ flatbuffer_py_library(
         "ErrorTableData.py",
         "ErrorType.py",
         "FunctionTableData.py",
-        "GcsTableEntry.py",
+        "GcsEntry.py",
         "HeartbeatBatchTableData.py",
         "HeartbeatTableData.py",
         "Language.py",
