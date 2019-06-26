@@ -151,6 +151,7 @@ requires = [
     "six >= 1.0.0",
     "flatbuffers",
     "faulthandler;python_version<'3.3'",
+    "protobuf",
 ]
 
 setup(
