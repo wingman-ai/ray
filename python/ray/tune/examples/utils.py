@@ -5,9 +5,24 @@ from __future__ import print_function
 import keras
 from keras.datasets import mnist
 from keras import backend as K
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
+
+
+class TuneKerasCallback(keras.callbacks.Callback):
+    def __init__(self, reporter, logs={}):
+        self.reporter = reporter
+        self.iteration = 0
+        super(TuneKerasCallback, self).__init__()
+
+    def on_train_end(self, epoch, logs={}):
+        self.reporter(
+            timesteps_total=self.iteration,
+            done=1,
+            mean_accuracy=logs.get("acc"))
+
+    def on_batch_end(self, batch, logs={}):
+        self.iteration += 1
+        self.reporter(
+            timesteps_total=self.iteration, mean_accuracy=logs["acc"])
 
 
 def get_mnist_data():
@@ -38,16 +53,6 @@ def get_mnist_data():
     return x_train, y_train, x_test, y_test, input_shape
 
 
-def get_iris_data(test_size=0.2):
-    iris_data = load_iris()
-    x = iris_data.data
-    y = iris_data.target.reshape(-1, 1)
-    encoder = OneHotEncoder(sparse=False)
-    y = encoder.fit_transform(y)
-    train_x, test_x, train_y, test_y = train_test_split(x, y)
-    return train_x, train_y, test_x, test_y
-
-
 def set_keras_threads(threads):
     # We set threads here to avoid contention, as Keras
     # is heavily parallelized across multiple cores.
@@ -56,8 +61,3 @@ def set_keras_threads(threads):
             config=K.tf.ConfigProto(
                 intra_op_parallelism_threads=threads,
                 inter_op_parallelism_threads=threads)))
-
-
-def TuneKerasCallback(*args, **kwargs):
-    raise DeprecationWarning("TuneKerasCallback is now "
-                             "tune.integration.keras.TuneReporterCallback.")

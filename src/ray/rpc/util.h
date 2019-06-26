@@ -1,7 +1,6 @@
 #ifndef RAY_RPC_UTIL_H
 #define RAY_RPC_UTIL_H
 
-#include <google/protobuf/repeated_field.h>
 #include <grpcpp/grpcpp.h>
 
 #include "ray/common/status.h"
@@ -26,18 +25,6 @@ inline Status GrpcStatusToRayStatus(const grpc::Status &grpc_status) {
   } else {
     return Status::IOError(grpc_status.error_message());
   }
-}
-
-template <class T>
-inline std::vector<T> VectorFromProtobuf(
-    const ::google::protobuf::RepeatedPtrField<T> &pb_repeated) {
-  return std::vector<T>(pb_repeated.begin(), pb_repeated.end());
-}
-
-template <class T>
-inline std::vector<T> VectorFromProtobuf(
-    const ::google::protobuf::RepeatedField<T> &pb_repeated) {
-  return std::vector<T>(pb_repeated.begin(), pb_repeated.end());
 }
 
 }  // namespace rpc

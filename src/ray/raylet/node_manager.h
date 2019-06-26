@@ -10,6 +10,7 @@
 #include "ray/raylet/task.h"
 #include "ray/object_manager/object_manager.h"
 #include "ray/common/client_connection.h"
+#include "ray/gcs/format/util.h"
 #include "ray/raylet/actor_registration.h"
 #include "ray/raylet/lineage_cache.h"
 #include "ray/raylet/scheduling_policy.h"
@@ -24,13 +25,6 @@
 namespace ray {
 
 namespace raylet {
-
-using rpc::ActorTableData;
-using rpc::ClientTableData;
-using rpc::DriverTableData;
-using rpc::ErrorType;
-using rpc::HeartbeatBatchTableData;
-using rpc::HeartbeatTableData;
 
 struct NodeManagerConfig {
   /// The node's resource configuration.
@@ -118,22 +112,22 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   ///
   /// \param data Data associated with the new client.
   /// \return Void.
-  void ClientAdded(const ClientTableData &data);
+  void ClientAdded(const ClientTableDataT &data);
 
   /// Handler for the removal of a GCS client.
   /// \param client_data Data associated with the removed client.
   /// \return Void.
-  void ClientRemoved(const ClientTableData &client_data);
+  void ClientRemoved(const ClientTableDataT &client_data);
 
   /// Handler for the addition or updation of a resource in the GCS
   /// \param client_data Data associated with the new client.
   /// \return Void.
-  void ResourceCreateUpdated(const ClientTableData &client_data);
+  void ResourceCreateUpdated(const ClientTableDataT &client_data);
 
   /// Handler for the deletion of a resource in the GCS
   /// \param client_data Data associated with the new client.
   /// \return Void.
-  void ResourceDeleted(const ClientTableData &client_data);
+  void ResourceDeleted(const ClientTableDataT &client_data);
 
   /// Evaluates the local infeasible queue to check if any tasks can be scheduled.
   /// This is called whenever there's an update to the resources on the local client.
@@ -156,11 +150,11 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   /// \param id The ID of the node manager that sent the heartbeat.
   /// \param data The heartbeat data including load information.
   /// \return Void.
-  void HeartbeatAdded(const ClientID &id, const HeartbeatTableData &data);
+  void HeartbeatAdded(const ClientID &id, const HeartbeatTableDataT &data);
   /// Handler for a heartbeat batch notification from the GCS
   ///
   /// \param heartbeat_batch The batch of heartbeat data.
-  void HeartbeatBatchAdded(const HeartbeatBatchTableData &heartbeat_batch);
+  void HeartbeatBatchAdded(const HeartbeatBatchTableDataT &heartbeat_batch);
 
   /// Methods for task scheduling.
 
@@ -212,7 +206,7 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   /// Helper function to produce actor table data for a newly created actor.
   ///
   /// \param task The actor creation task that created the actor.
-  ActorTableData CreateActorTableDataFromCreationTask(const Task &task);
+  ActorTableDataT CreateActorTableDataFromCreationTask(const Task &task);
   /// Handle a worker finishing an assigned actor task or actor creation task.
   /// \param worker The worker that finished the task.
   /// \param task The actor task or actor creationt ask.
@@ -323,7 +317,7 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   /// \param failure_callback An optional callback to call if the publish is
   /// unsuccessful.
   void PublishActorStateTransition(
-      const ActorID &actor_id, const ActorTableData &data,
+      const ActorID &actor_id, const ActorTableDataT &data,
       const ray::gcs::ActorTable::WriteCallback &failure_callback);
 
   /// When a driver dies, loop over all of the queued tasks for that driver and
@@ -352,7 +346,7 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   /// \param driver_data Data associated with a driver table event.
   /// \return Void.
   void HandleDriverTableUpdate(const DriverID &id,
-                               const std::vector<DriverTableData> &driver_data);
+                               const std::vector<DriverTableDataT> &driver_data);
 
   /// Check if certain invariants associated with the task dependency manager
   /// and the local queues are satisfied. This is only used for debugging
@@ -512,10 +506,7 @@ class NodeManager : public rpc::NodeManagerServiceHandler {
   std::unordered_map<ActorID, ActorCheckpointID> checkpoint_id_to_restore_;
 
   /// The RPC server.
-  rpc::GrpcServer node_manager_server_;
-
-  /// The RPC service.
-  rpc::NodeManagerGrpcService node_manager_service_;
+  rpc::NodeManagerServer node_manager_server_;
 
   /// The `ClientCallManager` object that is shared by all `NodeManagerClient`s.
   rpc::ClientCallManager client_call_manager_;

@@ -2,8 +2,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import logging
-
 from collections import defaultdict
 
 import ray
@@ -14,8 +12,6 @@ import ray.cloudpickle as cloudpickle
 # This constant is also used in NodeManager::PublishActorStateTransition()
 # in node_manager.cc
 ACTOR_DIED_STR = "ACTOR_DIED_SIGNAL"
-
-logger = logging.getLogger(__name__)
 
 
 class Signal(object):
@@ -129,16 +125,10 @@ def receive(sources, timeout=None):
     for s in sources:
         task_id_to_sources[_get_task_id(s).hex()].append(s)
 
-    if timeout < 1e-3:
-        logger.warning("Timeout too small. Using 1ms minimum")
-        timeout = 1e-3
-
-    timeout_ms = int(1000 * timeout)
-
     # Construct the redis query.
     query = "XREAD BLOCK "
-    # redis expects ms.
-    query += str(timeout_ms)
+    # Multiply by 1000x since timeout is in sec and redis expects ms.
+    query += str(1000 * timeout)
     query += " STREAMS "
     query += " ".join([task_id for task_id in task_id_to_sources])
     query += " "

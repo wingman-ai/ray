@@ -10,11 +10,11 @@ import time
 
 import ray
 from ray.function_manager import FunctionDescriptor
+import ray.gcs_utils
 
-from ray import (
-    gcs_utils,
-    services,
-)
+from ray.ray_constants import ID_SIZE
+from ray import services
+from ray.core.generated.EntryType import EntryType
 from ray.utils import (decode, binary_to_object_id, binary_to_hex,
                        hex_to_binary)
 
@@ -31,9 +31,9 @@ def _parse_client_table(redis_client):
         A list of information about the nodes in the cluster.
     """
     NIL_CLIENT_ID = ray.ObjectID.nil().binary()
-    message = redis_client.execute_command(
-        "RAY.TABLE_LOOKUP", gcs_utils.TablePrefix.Value("CLIENT"), "",
-        NIL_CLIENT_ID)
+    message = redis_client.execute_command("RAY.TABLE_LOOKUP",
+                                           ray.gcs_utils.TablePrefix.CLIENT,
+                                           "", NIL_CLIENT_ID)
 
     # Handle the case where no clients are returned. This should only
     # occur potentially immediately after the cluster is started.
@@ -41,31 +41,36 @@ def _parse_client_table(redis_client):
         return []
 
     node_info = {}
-    gcs_entry = gcs_utils.GcsEntry.FromString(message)
+    gcs_entry = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
 
     ordered_client_ids = []
 
     # Since GCS entries are append-only, we override so that
     # only the latest entries are kept.
-    for entry in gcs_entry.entries:
-        client = gcs_utils.ClientTableData.FromString(entry)
+    for i in range(gcs_entry.EntriesLength()):
+        client = (ray.gcs_utils.ClientTableData.GetRootAsClientTableData(
+            gcs_entry.Entries(i), 0))
 
         resources = {
-            client.resources_total_label[i]: client.resources_total_capacity[i]
-            for i in range(len(client.resources_total_label))
+            decode(client.ResourcesTotalLabel(i)):
+            client.ResourcesTotalCapacity(i)
+            for i in range(client.ResourcesTotalLabelLength())
         }
-        client_id = ray.utils.binary_to_hex(client.client_id)
+        client_id = ray.utils.binary_to_hex(client.ClientId())
 
-        if client.entry_type == gcs_utils.ClientTableData.INSERTION:
+        if client.EntryType() == EntryType.INSERTION:
             ordered_client_ids.append(client_id)
             node_info[client_id] = {
                 "ClientID": client_id,
-                "EntryType": client.entry_type,
-                "NodeManagerAddress": client.node_manager_address,
-                "NodeManagerPort": client.node_manager_port,
-                "ObjectManagerPort": client.object_manager_port,
-                "ObjectStoreSocketName": client.object_store_socket_name,
-                "RayletSocketName": client.raylet_socket_name,
+                "EntryType": client.EntryType(),
+                "NodeManagerAddress": decode(
+                    client.NodeManagerAddress(), allow_none=True),
+                "NodeManagerPort": client.NodeManagerPort(),
+                "ObjectManagerPort": client.ObjectManagerPort(),
+                "ObjectStoreSocketName": decode(
+                    client.ObjectStoreSocketName(), allow_none=True),
+                "RayletSocketName": decode(
+                    client.RayletSocketName(), allow_none=True),
                 "Resources": resources
             }
 
@@ -74,23 +79,22 @@ def _parse_client_table(redis_client):
         # it cannot have previously been removed.
         else:
             assert client_id in node_info, "Client not found!"
-            is_deletion = (node_info[client_id]["EntryType"] !=
-                           gcs_utils.ClientTableData.DELETION)
-            assert is_deletion, "Unexpected updation of deleted client."
+            assert node_info[client_id]["EntryType"] != EntryType.DELETION, (
+                "Unexpected updation of deleted client.")
             res_map = node_info[client_id]["Resources"]
-            if client.entry_type == gcs_utils.ClientTableData.RES_CREATEUPDATE:
+            if client.EntryType() == EntryType.RES_CREATEUPDATE:
                 for res in resources:
                     res_map[res] = resources[res]
-            elif client.entry_type == gcs_utils.ClientTableData.RES_DELETE:
+            elif client.EntryType() == EntryType.RES_DELETE:
                 for res in resources:
                     res_map.pop(res, None)
-            elif client.entry_type == gcs_utils.ClientTableData.DELETION:
+            elif client.EntryType() == EntryType.DELETION:
                 pass  # Do nothing with the resmap if client deletion
             else:
                 raise RuntimeError("Unexpected EntryType {}".format(
-                    client.entry_type))
+                    client.EntryType()))
             node_info[client_id]["Resources"] = res_map
-            node_info[client_id]["EntryType"] = client.entry_type
+            node_info[client_id]["EntryType"] = client.EntryType()
     # NOTE: We return the list comprehension below instead of simply doing
     # 'list(node_info.values())' in order to have the nodes appear in the order
     # that they joined the cluster. Python dictionaries do not preserve
@@ -240,19 +244,20 @@ class GlobalState(object):
 
         # Return information about a single object ID.
         message = self._execute_command(object_id, "RAY.TABLE_LOOKUP",
-                                        gcs_utils.TablePrefix.Value("OBJECT"),
-                                        "", object_id.binary())
+                                        ray.gcs_utils.TablePrefix.OBJECT, "",
+                                        object_id.binary())
         if message is None:
             return {}
-        gcs_entry = gcs_utils.GcsEntry.FromString(message)
+        gcs_entry = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
 
-        assert len(gcs_entry.entries) > 0
+        assert gcs_entry.EntriesLength() > 0
 
-        entry = gcs_utils.ObjectTableData.FromString(gcs_entry.entries[0])
+        entry = ray.gcs_utils.ObjectTableData.GetRootAsObjectTableData(
+            gcs_entry.Entries(0), 0)
 
         object_info = {
-            "DataSize": entry.object_size,
-            "Manager": entry.manager,
+            "DataSize": entry.ObjectSize(),
+            "Manager": entry.Manager(),
         }
 
         return object_info
@@ -273,9 +278,10 @@ class GlobalState(object):
             return self._object_table(object_id)
         else:
             # Return the entire object table.
-            object_keys = self._keys(gcs_utils.TablePrefix_OBJECT_string + "*")
+            object_keys = self._keys(ray.gcs_utils.TablePrefix_OBJECT_string +
+                                     "*")
             object_ids_binary = {
-                key[len(gcs_utils.TablePrefix_OBJECT_string):]
+                key[len(ray.gcs_utils.TablePrefix_OBJECT_string):]
                 for key in object_keys
             }
 
@@ -295,18 +301,17 @@ class GlobalState(object):
             A dictionary with information about the task ID in question.
         """
         assert isinstance(task_id, ray.TaskID)
-        message = self._execute_command(
-            task_id, "RAY.TABLE_LOOKUP",
-            gcs_utils.TablePrefix.Value("RAYLET_TASK"), "", task_id.binary())
+        message = self._execute_command(task_id, "RAY.TABLE_LOOKUP",
+                                        ray.gcs_utils.TablePrefix.RAYLET_TASK,
+                                        "", task_id.binary())
         if message is None:
             return {}
-        gcs_entries = gcs_utils.GcsEntry.FromString(message)
+        gcs_entries = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
 
-        assert len(gcs_entries.entries) == 1
-        task_table_data = gcs_utils.TaskTableData.FromString(
-            gcs_entries.entries[0])
-        task_table_message = gcs_utils.Task.GetRootAsTask(
-            task_table_data.task, 0)
+        assert gcs_entries.EntriesLength() == 1
+
+        task_table_message = ray.gcs_utils.Task.GetRootAsTask(
+            gcs_entries.Entries(0), 0)
 
         execution_spec = task_table_message.TaskExecutionSpec()
         task_spec = task_table_message.TaskSpecification()
@@ -363,9 +368,9 @@ class GlobalState(object):
             return self._task_table(task_id)
         else:
             task_table_keys = self._keys(
-                gcs_utils.TablePrefix_RAYLET_TASK_string + "*")
+                ray.gcs_utils.TablePrefix_RAYLET_TASK_string + "*")
             task_ids_binary = [
-                key[len(gcs_utils.TablePrefix_RAYLET_TASK_string):]
+                key[len(ray.gcs_utils.TablePrefix_RAYLET_TASK_string):]
                 for key in task_table_keys
             ]
 
@@ -374,6 +379,27 @@ class GlobalState(object):
                 results[binary_to_hex(task_id_binary)] = self._task_table(
                     ray.TaskID(task_id_binary))
             return results
+
+    def function_table(self, function_id=None):
+        """Fetch and parse the function table.
+
+        Returns:
+            A dictionary that maps function IDs to information about the
+                function.
+        """
+        self._check_connected()
+        function_table_keys = self.redis_client.keys(
+            ray.gcs_utils.FUNCTION_PREFIX + "*")
+        results = {}
+        for key in function_table_keys:
+            info = self.redis_client.hgetall(key)
+            function_info_parsed = {
+                "DriverID": binary_to_hex(info[b"driver_id"]),
+                "Module": decode(info[b"module"]),
+                "Name": decode(info[b"name"])
+            }
+            results[binary_to_hex(info[b"function_id"])] = function_info_parsed
+        return results
 
     def client_table(self):
         """Fetch and parse the Redis DB client table.
@@ -397,32 +423,37 @@ class GlobalState(object):
         # TODO(rkn): This method should support limiting the number of log
         # events and should also support returning a window of events.
         message = self._execute_command(batch_id, "RAY.TABLE_LOOKUP",
-                                        gcs_utils.TablePrefix.Value("PROFILE"),
-                                        "", batch_id.binary())
+                                        ray.gcs_utils.TablePrefix.PROFILE, "",
+                                        batch_id.binary())
 
         if message is None:
             return []
 
-        gcs_entries = gcs_utils.GcsEntry.FromString(message)
+        gcs_entries = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
 
         profile_events = []
-        for entry in gcs_entries.entries:
-            profile_table_message = gcs_utils.ProfileTableData.FromString(
-                entry)
+        for i in range(gcs_entries.EntriesLength()):
+            profile_table_message = (
+                ray.gcs_utils.ProfileTableData.GetRootAsProfileTableData(
+                    gcs_entries.Entries(i), 0))
 
-            component_type = profile_table_message.component_type
-            component_id = binary_to_hex(profile_table_message.component_id)
-            node_ip_address = profile_table_message.node_ip_address
+            component_type = decode(profile_table_message.ComponentType())
+            component_id = binary_to_hex(profile_table_message.ComponentId())
+            node_ip_address = decode(
+                profile_table_message.NodeIpAddress(), allow_none=True)
 
-            for profile_event_message in profile_table_message.profile_events:
+            for j in range(profile_table_message.ProfileEventsLength()):
+                profile_event_message = profile_table_message.ProfileEvents(j)
+
                 profile_event = {
-                    "event_type": profile_event_message.event_type,
+                    "event_type": decode(profile_event_message.EventType()),
                     "component_id": component_id,
                     "node_ip_address": node_ip_address,
                     "component_type": component_type,
-                    "start_time": profile_event_message.start_time,
-                    "end_time": profile_event_message.end_time,
-                    "extra_data": json.loads(profile_event_message.extra_data),
+                    "start_time": profile_event_message.StartTime(),
+                    "end_time": profile_event_message.EndTime(),
+                    "extra_data": json.loads(
+                        decode(profile_event_message.ExtraData())),
                 }
 
                 profile_events.append(profile_event)
@@ -431,10 +462,10 @@ class GlobalState(object):
 
     def profile_table(self):
         self._check_connected()
-        profile_table_keys = self._keys(gcs_utils.TablePrefix_PROFILE_string +
-                                        "*")
+        profile_table_keys = self._keys(
+            ray.gcs_utils.TablePrefix_PROFILE_string + "*")
         batch_identifiers_binary = [
-            key[len(gcs_utils.TablePrefix_PROFILE_string):]
+            key[len(ray.gcs_utils.TablePrefix_PROFILE_string):]
             for key in profile_table_keys
         ]
 
@@ -735,7 +766,7 @@ class GlobalState(object):
         clients = self.client_table()
         for client in clients:
             # Only count resources from latest entries of live clients.
-            if client["EntryType"] != gcs_utils.ClientTableData.DELETION:
+            if client["EntryType"] != EntryType.DELETION:
                 for key, value in client["Resources"].items():
                     resources[key] += value
         return dict(resources)
@@ -745,7 +776,7 @@ class GlobalState(object):
         return {
             client["ClientID"]
             for client in self.client_table()
-            if (client["EntryType"] != gcs_utils.ClientTableData.DELETION)
+            if (client["EntryType"] != EntryType.DELETION)
         }
 
     def available_resources(self):
@@ -769,7 +800,7 @@ class GlobalState(object):
             for redis_client in self.redis_clients
         ]
         for subscribe_client in subscribe_clients:
-            subscribe_client.subscribe(gcs_utils.XRAY_HEARTBEAT_CHANNEL)
+            subscribe_client.subscribe(ray.gcs_utils.XRAY_HEARTBEAT_CHANNEL)
 
         client_ids = self._live_client_ids()
 
@@ -778,23 +809,24 @@ class GlobalState(object):
                 # Parse client message
                 raw_message = subscribe_client.get_message()
                 if (raw_message is None or raw_message["channel"] !=
-                        gcs_utils.XRAY_HEARTBEAT_CHANNEL):
+                        ray.gcs_utils.XRAY_HEARTBEAT_CHANNEL):
                     continue
                 data = raw_message["data"]
-                gcs_entries = gcs_utils.GcsEntry.FromString(data)
-                heartbeat_data = gcs_entries.entries[0]
-                message = gcs_utils.HeartbeatTableData.FromString(
-                    heartbeat_data)
+                gcs_entries = (ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(
+                    data, 0))
+                heartbeat_data = gcs_entries.Entries(0)
+                message = (ray.gcs_utils.HeartbeatTableData.
+                           GetRootAsHeartbeatTableData(heartbeat_data, 0))
                 # Calculate available resources for this client
-                num_resources = len(message.resources_available_label)
+                num_resources = message.ResourcesAvailableLabelLength()
                 dynamic_resources = {}
                 for i in range(num_resources):
-                    resource_id = message.resources_available_label[i]
+                    resource_id = decode(message.ResourcesAvailableLabel(i))
                     dynamic_resources[resource_id] = (
-                        message.resources_available_capacity[i])
+                        message.ResourcesAvailableCapacity(i))
 
                 # Update available resources for this client
-                client_id = ray.utils.binary_to_hex(message.client_id)
+                client_id = ray.utils.binary_to_hex(message.ClientId())
                 available_resources_by_id[client_id] = dynamic_resources
 
             # Update clients in cluster
@@ -828,22 +860,23 @@ class GlobalState(object):
         """
         assert isinstance(driver_id, ray.DriverID)
         message = self.redis_client.execute_command(
-            "RAY.TABLE_LOOKUP", gcs_utils.TablePrefix.Value("ERROR_INFO"), "",
+            "RAY.TABLE_LOOKUP", ray.gcs_utils.TablePrefix.ERROR_INFO, "",
             driver_id.binary())
 
         # If there are no errors, return early.
         if message is None:
             return []
 
-        gcs_entries = gcs_utils.GcsEntry.FromString(message)
+        gcs_entries = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
         error_messages = []
-        for entry in gcs_entries.entries:
-            error_data = gcs_utils.ErrorTableData.FromString(entry)
-            assert driver_id.binary() == error_data.driver_id
+        for i in range(gcs_entries.EntriesLength()):
+            error_data = ray.gcs_utils.ErrorTableData.GetRootAsErrorTableData(
+                gcs_entries.Entries(i), 0)
+            assert driver_id.binary() == error_data.DriverId()
             error_message = {
-                "type": error_data.type,
-                "message": error_data.error_message,
-                "timestamp": error_data.timestamp,
+                "type": decode(error_data.Type()),
+                "message": decode(error_data.ErrorMessage()),
+                "timestamp": error_data.Timestamp(),
             }
             error_messages.append(error_message)
         return error_messages
@@ -866,9 +899,9 @@ class GlobalState(object):
             return self._error_messages(driver_id)
 
         error_table_keys = self.redis_client.keys(
-            gcs_utils.TablePrefix_ERROR_INFO_string + "*")
+            ray.gcs_utils.TablePrefix_ERROR_INFO_string + "*")
         driver_ids = [
-            key[len(gcs_utils.TablePrefix_ERROR_INFO_string):]
+            key[len(ray.gcs_utils.TablePrefix_ERROR_INFO_string):]
             for key in error_table_keys
         ]
 
@@ -890,23 +923,30 @@ class GlobalState(object):
         message = self._execute_command(
             actor_id,
             "RAY.TABLE_LOOKUP",
-            gcs_utils.TablePrefix.Value("ACTOR_CHECKPOINT_ID"),
+            ray.gcs_utils.TablePrefix.ACTOR_CHECKPOINT_ID,
             "",
             actor_id.binary(),
         )
         if message is None:
             return None
-        gcs_entry = gcs_utils.GcsEntry.FromString(message)
-        entry = gcs_utils.ActorCheckpointIdData.FromString(
-            gcs_entry.entries[0])
+        gcs_entry = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(message, 0)
+        entry = (
+            ray.gcs_utils.ActorCheckpointIdData.GetRootAsActorCheckpointIdData(
+                gcs_entry.Entries(0), 0))
+        checkpoint_ids_str = entry.CheckpointIds()
+        num_checkpoints = len(checkpoint_ids_str) // ID_SIZE
+        assert len(checkpoint_ids_str) % ID_SIZE == 0
         checkpoint_ids = [
-            ray.ActorCheckpointID(checkpoint_id)
-            for checkpoint_id in entry.checkpoint_ids
+            ray.ActorCheckpointID(
+                checkpoint_ids_str[(i * ID_SIZE):((i + 1) * ID_SIZE)])
+            for i in range(num_checkpoints)
         ]
         return {
-            "ActorID": ray.utils.binary_to_hex(entry.actor_id),
+            "ActorID": ray.utils.binary_to_hex(entry.ActorId()),
             "CheckpointIds": checkpoint_ids,
-            "Timestamps": list(entry.timestamps),
+            "Timestamps": [
+                entry.Timestamps(i) for i in range(num_checkpoints)
+            ],
         }
 
 

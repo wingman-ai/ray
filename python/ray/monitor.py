@@ -101,26 +101,28 @@ class Monitor(object):
     def xray_heartbeat_batch_handler(self, unused_channel, data):
         """Handle an xray heartbeat batch message from Redis."""
 
-        gcs_entries = ray.gcs_utils.GcsEntry.FromString(data)
-        heartbeat_data = gcs_entries.entries[0]
+        gcs_entries = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(data, 0)
+        heartbeat_data = gcs_entries.Entries(0)
 
-        message = ray.gcs_utils.HeartbeatBatchTableData.FromString(
-            heartbeat_data)
+        message = (ray.gcs_utils.HeartbeatBatchTableData.
+                   GetRootAsHeartbeatBatchTableData(heartbeat_data, 0))
 
-        for heartbeat_message in message.batch:
-            num_resources = len(heartbeat_message.resources_available_label)
+        for j in range(message.BatchLength()):
+            heartbeat_message = message.Batch(j)
+
+            num_resources = heartbeat_message.ResourcesTotalLabelLength()
             static_resources = {}
             dynamic_resources = {}
             for i in range(num_resources):
-                dyn = heartbeat_message.resources_available_label[i]
-                static = heartbeat_message.resources_total_label[i]
+                dyn = heartbeat_message.ResourcesAvailableLabel(i)
+                static = heartbeat_message.ResourcesTotalLabel(i)
                 dynamic_resources[dyn] = (
-                    heartbeat_message.resources_available_capacity[i])
+                    heartbeat_message.ResourcesAvailableCapacity(i))
                 static_resources[static] = (
-                    heartbeat_message.resources_total_capacity[i])
+                    heartbeat_message.ResourcesTotalCapacity(i))
 
             # Update the load metrics for this raylet.
-            client_id = ray.utils.binary_to_hex(heartbeat_message.client_id)
+            client_id = ray.utils.binary_to_hex(heartbeat_message.ClientId())
             ip = self.raylet_id_to_ip_map.get(client_id)
             if ip:
                 self.load_metrics.update(ip, static_resources,
@@ -205,10 +207,11 @@ class Monitor(object):
             unused_channel: The message channel.
             data: The message data.
         """
-        gcs_entries = ray.gcs_utils.GcsEntry.FromString(data)
-        driver_data = gcs_entries.entries[0]
-        message = ray.gcs_utils.DriverTableData.FromString(driver_data)
-        driver_id = message.driver_id
+        gcs_entries = ray.gcs_utils.GcsEntry.GetRootAsGcsEntry(data, 0)
+        driver_data = gcs_entries.Entries(0)
+        message = ray.gcs_utils.DriverTableData.GetRootAsDriverTableData(
+            driver_data, 0)
+        driver_id = message.DriverId()
         logger.info("Monitor: "
                     "XRay Driver {} has been removed.".format(
                         binary_to_hex(driver_id)))

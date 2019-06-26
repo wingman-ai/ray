@@ -1,10 +1,8 @@
 package org.ray.api;
 
 import java.util.function.Supplier;
-import org.ray.api.annotation.RayRemote;
 import org.ray.runtime.AbstractRayRuntime;
 import org.ray.runtime.config.RunMode;
-import org.testng.Assert;
 import org.testng.SkipException;
 
 public class TestUtils {
@@ -43,18 +41,5 @@ public class TestUtils {
       }
     }
     return false;
-  }
-
-  @RayRemote
-  private static String hi() {
-    return "hi";
-  }
-
-  /**
-   * Warm up the cluster.
-   */
-  public static void warmUpCluster() {
-    RayObject<String> obj = Ray.call(TestUtils::hi);
-    Assert.assertEquals(obj.get(), "hi");
   }
 }

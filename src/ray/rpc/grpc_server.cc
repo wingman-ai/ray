@@ -1,5 +1,4 @@
 #include "ray/rpc/grpc_server.h"
-#include <grpcpp/impl/service_type.h>
 
 namespace ray {
 namespace rpc {
@@ -10,10 +9,8 @@ void GrpcServer::Run() {
   grpc::ServerBuilder builder;
   // TODO(hchen): Add options for authentication.
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials(), &port_);
-  // Register all the services to this server.
-  for (auto &entry : services_) {
-    builder.RegisterService(&entry.get());
-  }
+  // Allow subclasses to register concrete services.
+  RegisterServices(builder);
   // Get hold of the completion queue used for the asynchronous communication
   // with the gRPC runtime.
   cq_ = builder.AddCompletionQueue();
@@ -21,7 +18,8 @@ void GrpcServer::Run() {
   server_ = builder.BuildAndStart();
   RAY_LOG(DEBUG) << name_ << " server started, listening on port " << port_ << ".";
 
-  // Create calls for all the server call factories.
+  // Allow subclasses to initialize the server call factories.
+  InitServerCallFactories(&server_call_factories_and_concurrencies_);
   for (auto &entry : server_call_factories_and_concurrencies_) {
     for (int i = 0; i < entry.second; i++) {
       // Create and request calls from the factory.
@@ -31,11 +29,6 @@ void GrpcServer::Run() {
   // Start a thread that polls incoming requests.
   std::thread polling_thread(&GrpcServer::PollEventsFromCompletionQueue, this);
   polling_thread.detach();
-}
-
-void GrpcServer::RegisterService(GrpcService &service) {
-  services_.emplace_back(service.GetGrpcService());
-  service.InitServerCallFactories(cq_, &server_call_factories_and_concurrencies_);
 }
 
 void GrpcServer::PollEventsFromCompletionQueue() {
@@ -55,7 +48,7 @@ void GrpcServer::PollEventsFromCompletionQueue() {
         // incoming request.
         server_call->GetFactory().CreateCall();
         server_call->SetState(ServerCallState::PROCESSING);
-        server_call->HandleRequest();
+        main_service_.post([server_call] { server_call->HandleRequest(); });
         break;
       case ServerCallState::SENDING_REPLY:
         // The reply has been sent, this call can be deleted now.

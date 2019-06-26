@@ -13,8 +13,6 @@ namespace ray {
 
 namespace raylet {
 
-using rpc::TaskLeaseData;
-
 class ReconstructionPolicy;
 
 /// \class TaskDependencyManager

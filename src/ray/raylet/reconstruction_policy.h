@@ -17,8 +17,6 @@ namespace ray {
 
 namespace raylet {
 
-using rpc::TaskReconstructionData;
-
 class ReconstructionPolicyInterface {
  public:
   virtual void ListenAndMaybeReconstruct(const ObjectID &object_id) = 0;

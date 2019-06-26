@@ -842,7 +842,7 @@ def test_remote_functions_not_scheduled_on_actors(ray_start_regular):
     assert actor_id not in resulting_ids
 
 
-def test_actors_on_nodes_with_no_cpus(ray_start_no_cpu):
+def test_actors_on_nodes_with_no_cpus(ray_start_regular):
     @ray.remote
     class Foo(object):
         def method(self):
