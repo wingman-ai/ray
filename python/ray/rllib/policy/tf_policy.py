@@ -2,21 +2,21 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
 import errno
 import logging
-import numpy as np
+import os
 
+import numpy as np
 import ray
 import ray.experimental.tf_utils
+from ray.rllib.models.lstm import chop_into_sequences
 from ray.rllib.policy.policy import Policy, LEARNER_STATS_KEY
 from ray.rllib.policy.sample_batch import SampleBatch
-from ray.rllib.models.lstm import chop_into_sequences
+from ray.rllib.utils import try_import_tf
 from ray.rllib.utils.annotations import override, DeveloperAPI
 from ray.rllib.utils.debug import log_once, summarize
 from ray.rllib.utils.schedules import ConstantSchedule, PiecewiseSchedule, LinearSchedule
 from ray.rllib.utils.tf_run_builder import TFRunBuilder
-from ray.rllib.utils import try_import_tf
 
 tf = try_import_tf()
 logger = logging.getLogger(__name__)
@@ -416,7 +416,7 @@ class TFPolicy(Policy):
         if len(self._state_inputs) != len(state_batches):
             raise ValueError(
                 "Must pass in RNN state batches for placeholders {}, got {}".
-                format(self._state_inputs, state_batches))
+                    format(self._state_inputs, state_batches))
         builder.add_feed_dict(self.extra_compute_action_feed_dict())
         builder.add_feed_dict({self._obs_input: obs_batch})
         if state_batches:
@@ -443,7 +443,7 @@ class TFPolicy(Policy):
         if len(gradients) != len(self._grads):
             raise ValueError(
                 "Unexpected number of gradients to apply, got {} for {}".
-                format(gradients, self._grads))
+                    format(gradients, self._grads))
         builder.add_feed_dict({self._is_training: True})
         builder.add_feed_dict(dict(zip(self._grads, gradients)))
         fetches = builder.add_fetches([self._apply_op])
@@ -473,9 +473,9 @@ class TFPolicy(Policy):
         feed_dict = {}
         if self._batch_divisibility_req > 1:
             meets_divisibility_reqs = (
-                len(batch[SampleBatch.CUR_OBS]) %
-                self._batch_divisibility_req == 0
-                and max(batch[SampleBatch.AGENT_INDEX]) == 0)  # not multiagent
+                    len(batch[SampleBatch.CUR_OBS]) %
+                    self._batch_divisibility_req == 0
+                    and max(batch[SampleBatch.AGENT_INDEX]) == 0)  # not multiagent
         else:
             meets_divisibility_reqs = True
 
