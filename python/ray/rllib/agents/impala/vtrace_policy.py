@@ -7,19 +7,18 @@ from __future__ import division
 from __future__ import print_function
 
 import gym
-import ray
 import numpy as np
+import ray
 from ray.rllib.agents.impala import vtrace
 from ray.rllib.evaluation.metrics import LEARNER_STATS_KEY
-from ray.rllib.policy.policy import Policy
-from ray.rllib.policy.sample_batch import SampleBatch
-from ray.rllib.policy.tf_policy import TFPolicy, \
-    LearningRateSchedule, EntropyCoeffSchedule
 from ray.rllib.models.action_dist import MultiCategorical
 from ray.rllib.models.catalog import ModelCatalog
+from ray.rllib.policy.policy import Policy
+from ray.rllib.policy.sample_batch import SampleBatch
+from ray.rllib.policy.tf_policy import TFPolicy, LearningRateSchedule
+from ray.rllib.utils import try_import_tf
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.explained_variance import explained_variance
-from ray.rllib.utils import try_import_tf
 
 tf = try_import_tf()
 
@@ -96,15 +95,22 @@ class VTraceLoss(object):
 
         # The baseline loss
         delta = tf.boolean_mask(values - self.vtrace_returns.vs, valid_mask)
-        self.vf_loss = tf.math.multiply(0.5, tf.reduce_sum(tf.square(delta)), name='vf_loss')
+        self.vf_loss = tf.math.multiply(
+            0.5, tf.reduce_sum(
+                tf.square(delta)), name='vf_loss')
 
         # The entropy loss
         self.entropy = tf.reduce_sum(
             tf.boolean_mask(actions_entropy, valid_mask), name='entropy_loss')
 
         # The summed weighted loss
-        self.total_loss = tf.math.add(self.pi_loss, self.vf_loss * vf_loss_coeff - self.entropy * entropy_coeff,
-                                      name='total_loss')
+        self.total_loss = tf.math.add(
+            self.pi_loss,
+            self.vf_loss *
+            vf_loss_coeff -
+            self.entropy *
+            entropy_coeff,
+            name='total_loss')
 
 
 class VTracePostprocessing(object):
@@ -126,7 +132,7 @@ class VTracePostprocessing(object):
         return sample_batch
 
 
-class VTraceTFPolicy(LearningRateSchedule, EntropyCoeffSchedule, VTracePostprocessing, TFPolicy):
+class VTraceTFPolicy(LearningRateSchedule, VTracePostprocessing, TFPolicy):
     def __init__(self,
                  observation_space,
                  action_space,
@@ -249,9 +255,6 @@ class VTraceTFPolicy(LearningRateSchedule, EntropyCoeffSchedule, VTracePostproce
         loss_actions = actions if is_multidiscrete else tf.expand_dims(
             actions, axis=1)
 
-        EntropyCoeffSchedule.__init__(self, self.config["entropy_coeff"],
-                                      self.config["entropy_schedule"])
-
         # Inputs are reshaped from [B * T] => [T - 1, B] for V-trace calc.
         with tf.name_scope('vtrace_loss'):
             self.loss = VTraceLoss(
@@ -277,8 +280,10 @@ class VTraceTFPolicy(LearningRateSchedule, EntropyCoeffSchedule, VTracePostproce
 
         with tf.name_scope('kl_divergence'):
             # KL divergence between worker and learner logits for debugging
-            model_dist = MultiCategorical(self.model.outputs, output_hidden_shape)
-            behaviour_dist = MultiCategorical(behaviour_logits, output_hidden_shape)
+            model_dist = MultiCategorical(
+                self.model.outputs, output_hidden_shape)
+            behaviour_dist = MultiCategorical(
+                behaviour_logits, output_hidden_shape)
 
             kls = model_dist.kl(behaviour_dist)
             if len(kls) > 1:
@@ -336,7 +341,6 @@ class VTraceTFPolicy(LearningRateSchedule, EntropyCoeffSchedule, VTracePostproce
             self.stats_fetches = {
                 LEARNER_STATS_KEY: dict({
                     "cur_lr": tf.cast(self.cur_lr, tf.float64),
-                    "entropy_coeff": tf.cast(self.entropy_coeff, tf.float64),
                     "policy_loss": self.loss.pi_loss,
                     "entropy": self.loss.entropy,
                     "grad_gnorm": tf.global_norm(self._grads),

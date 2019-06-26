@@ -551,23 +551,3 @@ class LearningRateSchedule(object):
     @override(TFPolicy)
     def optimizer(self):
         return tf.train.AdamOptimizer(self.cur_lr)
-
-
-@DeveloperAPI
-class EntropyCoeffSchedule(object):
-    """Mixin for TFPolicy that adds entropy coeff decay."""
-
-    @DeveloperAPI
-    def __init__(self, entropy_coeff, entropy_schedule):
-        self.entropy_coeff = tf.get_variable("entropy_coeff", initializer=entropy_coeff)
-        self._entropy_schedule = entropy_schedule
-
-    @override(Policy)
-    def on_global_var_update(self, global_vars):
-        super(EntropyCoeffSchedule, self).on_global_var_update(global_vars)
-        if self._entropy_schedule is not None:
-            self.entropy_coeff.load(
-                self.config['entropy_coeff'] *
-                (1 - global_vars['timestep'] /
-                 self.config['entropy_schedule']),
-                session=self._sess)
