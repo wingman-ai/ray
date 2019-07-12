@@ -18,8 +18,8 @@ from ray.rllib.utils.debug import log_once, summarize
 from ray.rllib.utils.schedules import ConstantSchedule, PiecewiseSchedule
 from ray.rllib.utils.tf_run_builder import TFRunBuilder
 
-from python.ray.rllib.models.modelv2 import ModelV2
-from python.ray.rllib.utils.schedules import LinearSchedule
+from ray.rllib.models.modelv2 import ModelV2
+from ray.rllib.utils.schedules import LinearSchedule
 
 tf = try_import_tf()
 logger = logging.getLogger(__name__)
