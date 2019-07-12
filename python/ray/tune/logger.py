@@ -1,25 +1,21 @@
-from __future__ import absolute_import, division, print_function
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
-import copy
 import csv
-import distutils.version
 import json
 import logging
-import numbers
 import os
-import threading
-import time
-from collections import defaultdict
-from threading import Thread
-
-import GPUtil
-import numpy as np
-import psutil
 import yaml
+import distutils.version
+import numbers
+
+import numpy as np
 
 import ray.cloudpickle as cloudpickle
-from ray.tune.log_sync import get_syncer
-from ray.tune.result import NODE_IP, TIME_TOTAL_S, TIMESTEPS_TOTAL, TRAINING_ITERATION
+from ray.tune.syncer import get_log_syncer
+from ray.tune.result import NODE_IP, TRAINING_ITERATION, TIME_TOTAL_S, \
+    TIMESTEPS_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +33,11 @@ class Logger(object):
     Arguments:
         config: Configuration passed to all logger creators.
         logdir: Directory for all logger creators to log to.
-        upload_uri (str): Optional URI where the logdir is sync'ed to.
     """
 
-    def __init__(self, config, logdir, upload_uri=None):
+    def __init__(self, config, logdir):
         self.config = config
         self.logdir = logdir
-        self.uri = upload_uri
         self._init()
 
     def _init(self):
@@ -127,39 +121,6 @@ def to_tf_values(result, path):
     return values
 
 
-class UtilMonitor(Thread):
-    def __init__(self, delay):
-        super(UtilMonitor, self).__init__()
-        self.stopped = False
-        self.delay = delay  # Time between calls to GPUtil
-        self.values = defaultdict(list)
-        self.lock = threading.Lock()
-        self.start()
-
-    def read_utilization(self):
-        with self.lock:
-            self.values["perf/cpu"].append(float(psutil.cpu_percent(interval=None)))
-            self.values["perf/ram"].append(float(getattr(psutil.virtual_memory(), 'percent')))
-            for gpu in GPUtil.getGPUs():
-                self.values["perf/gpu" + str(gpu.id)].append(float(gpu.load))
-                self.values["perf/vram" + str(gpu.id)].append(float(gpu.memoryUtil))
-
-    def get_data(self):
-        with self.lock:
-            ret_values = copy.deepcopy(self.values)
-            for key, val in self.values.items():
-                val.clear()
-        return {k: np.mean(v) for k, v in ret_values.items()}
-
-    def run(self):
-        while not self.stopped:
-            self.read_utilization()
-            time.sleep(self.delay)
-
-    def stop(self):
-        self.stopped = True
-
-
 class TFLogger(Logger):
     def _init(self):
         try:
@@ -180,15 +141,15 @@ class TFLogger(Logger):
     def on_result(self, result):
         tmp = result.copy()
         for k in [
-            "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
+                "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             if k in tmp:
                 del tmp[k]  # not useful to tf log these
-        values = self.config['evaluation_config']['to_tf_values'](tmp, ["ray", "tune"])
+        values = to_tf_values(tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        iteration_value = self.config['evaluation_config']['to_tf_values']({
+        iteration_value = to_tf_values({
             "training_iteration": result[TRAINING_ITERATION]
         }, ["ray", "tune"])
         iteration_stats = tf.Summary(value=iteration_value)
@@ -233,24 +194,16 @@ DEFAULT_LOGGERS = (JsonLogger, CSVLogger, TFLogger)
 class UnifiedLogger(Logger):
     """Unified result logger for TensorBoard, rllab/viskit, plain json.
 
-    This class also periodically syncs output to the given upload uri.
-
     Arguments:
         config: Configuration passed to all logger creators.
         logdir: Directory for all logger creators to log to.
-        upload_uri (str): Optional URI where the logdir is sync'ed to.
         loggers (list): List of logger creators. Defaults to CSV, Tensorboard,
             and JSON loggers.
         sync_function (func|str): Optional function for syncer to run.
             See ray/python/ray/tune/log_sync.py
     """
 
-    def __init__(self,
-                 config,
-                 logdir,
-                 upload_uri=None,
-                 loggers=None,
-                 sync_function=None):
+    def __init__(self, config, logdir, loggers=None, sync_function=None):
         if loggers is None:
             self._logger_cls_list = DEFAULT_LOGGERS
         else:
@@ -258,31 +211,26 @@ class UnifiedLogger(Logger):
         self._sync_function = sync_function
         self._log_syncer = None
 
-        self.use_monitor = config["log_sys_usage"]
-
-        if self.use_monitor:
-            self.monitor = UtilMonitor(0.7)
-
-        Logger.__init__(self, config, logdir, upload_uri)
+        super(UnifiedLogger, self).__init__(config, logdir)
 
     def _init(self):
         self._loggers = []
         for cls in self._logger_cls_list:
             try:
-                self._loggers.append(cls(self.config, self.logdir, self.uri))
+                self._loggers.append(cls(self.config, self.logdir))
             except Exception:
                 logger.warning("Could not instantiate {} - skipping.".format(
                     str(cls)))
-        self._log_syncer = get_syncer(
-            self.logdir, self.uri, sync_function=self._sync_function)
+        self._log_syncer = get_log_syncer(
+            self.logdir,
+            remote_dir=self.logdir,
+            sync_function=self._sync_function)
 
     def on_result(self, result):
-        if self.use_monitor:
-            result.update(self.monitor.get_data())
         for _logger in self._loggers:
             _logger.on_result(result)
         self._log_syncer.set_worker_ip(result.get(NODE_IP))
-        self._log_syncer.sync_if_needed()
+        self._log_syncer.sync_down_if_needed()
 
     def update_config(self, config):
         for _logger in self._loggers:
@@ -291,13 +239,12 @@ class UnifiedLogger(Logger):
     def close(self):
         for _logger in self._loggers:
             _logger.close()
-        self._log_syncer.sync_now(force=False)
-        self._log_syncer.close()
+        self._log_syncer.sync_down()
 
     def flush(self):
         for _logger in self._loggers:
             _logger.flush()
-        self._log_syncer.sync_now(force=False)
+        self._log_syncer.sync_down()
 
     def sync_results_to_new_location(self, worker_ip):
         """Sends the current log directory to the remote node.
@@ -306,8 +253,13 @@ class UnifiedLogger(Logger):
         with the Ray autoscaler.
         """
         if worker_ip != self._log_syncer.worker_ip:
+            logger.info("Syncing (blocking) results to {}".format(worker_ip))
+            self._log_syncer.reset()
             self._log_syncer.set_worker_ip(worker_ip)
-            self._log_syncer.sync_to_worker_if_possible()
+            self._log_syncer.sync_up()
+            # TODO: change this because this is blocking. But failures
+            # are rare, so maybe this is OK?
+            self._log_syncer.wait()
 
 
 class _SafeFallbackEncoder(json.JSONEncoder):
@@ -336,13 +288,7 @@ class _SafeFallbackEncoder(json.JSONEncoder):
 
 
 def pretty_print(result):
-    result = copy.deepcopy(result)
-
-    try:
-        result['info']['learner']['histograms'] = '<not displayed>'
-    except KeyError:
-        pass
-
+    result = result.copy()
     result.update(config=None)  # drop config from pretty print
     out = {}
     for k, v in result.items():
