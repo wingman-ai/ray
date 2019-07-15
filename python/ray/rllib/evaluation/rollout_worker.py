@@ -578,7 +578,7 @@ class RolloutWorker(EvaluatorInterface):
                 with self.tf_sess.graph.as_default():
                     if self._beholder is None:
                         self._beholder = Beholder(self.io_context.log_dir)
-                    self._beholder.update(self.tf_sess, arrays=beholder_arrays if beholder_arrays else None)
+                    self._beholder.update(self.tf_sess, arrays=beholder_arrays or None)
 
         if log_once("learn_out"):
             logger.info("Training output:\n\n{}\n".format(summarize(info_out)))
