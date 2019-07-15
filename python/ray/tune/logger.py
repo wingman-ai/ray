@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import csv
 import json
 import logging
@@ -141,15 +142,15 @@ class TFLogger(Logger):
     def on_result(self, result):
         tmp = result.copy()
         for k in [
-                "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
+            "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             if k in tmp:
                 del tmp[k]  # not useful to tf log these
-        values = to_tf_values(tmp, ["ray", "tune"])
+        values = self.config['evaluation_config']['to_tf_values'](tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        iteration_value = to_tf_values({
+        iteration_value = self.config['evaluation_config']['to_tf_values']({
             "training_iteration": result[TRAINING_ITERATION]
         }, ["ray", "tune"])
         iteration_stats = tf.Summary(value=iteration_value)
@@ -288,7 +289,13 @@ class _SafeFallbackEncoder(json.JSONEncoder):
 
 
 def pretty_print(result):
-    result = result.copy()
+    result = copy.deepcopy(result)
+
+    try:
+        result['info']['learner']['histograms'] = '<not displayed>'
+    except KeyError:
+        pass
+
     result.update(config=None)  # drop config from pretty print
     out = {}
     for k, v in result.items():
