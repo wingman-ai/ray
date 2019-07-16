@@ -74,10 +74,8 @@ public abstract class AbstractRayRuntime implements RayRuntime {
 
   public AbstractRayRuntime(RayConfig rayConfig) {
     this.rayConfig = rayConfig;
-    functionManager = new FunctionManager(rayConfig.driverResourcePath);
+    functionManager = new FunctionManager(rayConfig.jobResourcePath);
     worker = new Worker(this);
-    workerContext = new WorkerContext(rayConfig.workerMode,
-        rayConfig.driverId, rayConfig.runMode);
     runtimeContext = new RuntimeContextImpl(this);
   }
 
@@ -346,7 +344,7 @@ public abstract class AbstractRayRuntime implements RayRuntime {
       boolean isActorCreationTask, BaseTaskOptions taskOptions) {
     Preconditions.checkArgument((func == null) != (pyFunctionDescriptor == null));
 
-    TaskId taskId = rayletClient.generateTaskId(workerContext.getCurrentDriverId(),
+    TaskId taskId = rayletClient.generateTaskId(workerContext.getCurrentJobId(),
         workerContext.getCurrentTaskId(), workerContext.nextTaskIndex());
     int numReturns = actor.getId().isNil() ? 1 : 2;
     ObjectId[] returnIds = IdUtil.genReturnIds(taskId, numReturns);
@@ -377,7 +375,7 @@ public abstract class AbstractRayRuntime implements RayRuntime {
     FunctionDescriptor functionDescriptor;
     if (func != null) {
       language = TaskLanguage.JAVA;
-      functionDescriptor = functionManager.getFunction(workerContext.getCurrentDriverId(), func)
+      functionDescriptor = functionManager.getFunction(workerContext.getCurrentJobId(), func)
           .getFunctionDescriptor();
     } else {
       language = TaskLanguage.PYTHON;
@@ -385,7 +383,7 @@ public abstract class AbstractRayRuntime implements RayRuntime {
     }
 
     return new TaskSpec(
-        workerContext.getCurrentDriverId(),
+        workerContext.getCurrentJobId(),
         taskId,
         workerContext.getCurrentTaskId(),
         -1,

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import org.ray.api.id.JobId;
 import org.ray.api.id.ObjectId;
 import org.ray.api.id.TaskId;
 import org.ray.api.id.UniqueId;
@@ -18,8 +19,8 @@ import org.ray.runtime.util.IdUtil;
  */
 public class TaskSpec {
 
-  // ID of the driver that created this task.
-  public final UniqueId driverId;
+  // ID of the job that created this task.
+  public final JobId jobId;
 
   // Task ID of the task.
   public final TaskId taskId;
@@ -81,7 +82,7 @@ public class TaskSpec {
   }
 
   public TaskSpec(
-      UniqueId driverId,
+      JobId jobId,
       TaskId taskId,
       TaskId parentTaskId,
       int parentCounter,
@@ -97,7 +98,7 @@ public class TaskSpec {
       TaskLanguage language,
       FunctionDescriptor functionDescriptor,
       List<String> dynamicWorkerOptions) {
-    this.driverId = driverId;
+    this.jobId = jobId;
     this.taskId = taskId;
     this.parentTaskId = parentTaskId;
     this.parentCounter = parentCounter;
@@ -147,7 +148,7 @@ public class TaskSpec {
   @Override
   public String toString() {
     return "TaskSpec{" +
-        "driverId=" + driverId +
+        "jobId=" + jobId +
         ", taskId=" + taskId +
         ", parentTaskId=" + parentTaskId +
         ", parentCounter=" + parentCounter +
