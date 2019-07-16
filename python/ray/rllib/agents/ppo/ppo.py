@@ -122,8 +122,14 @@ def warn_about_bad_reward_scales(trainer, result):
     elif result["policy_reward_mean"]:
         rew_scale = 0  # punt on handling multiagent case
     else:
+        if isinstance(result["episode_reward_mean"], dict):
+            from statistics import mean
+            episode_reward_mean = mean(result["episode_reward_mean"].values())
+        else:
+            episode_reward_mean = result["episode_reward_mean"]
+
         rew_scale = round(
-            abs(result["episode_reward_mean"]) /
+            abs(episode_reward_mean) /
             trainer.config["vf_clip_param"], 0)
     if rew_scale > 200:
         logger.warning(
