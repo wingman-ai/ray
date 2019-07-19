@@ -142,15 +142,18 @@ class TFLogger(Logger):
     def on_result(self, result):
         tmp = result.copy()
         for k in [
-            "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
+                "config", "pid", "timestamp", TIME_TOTAL_S, TRAINING_ITERATION
         ]:
             if k in tmp:
                 del tmp[k]  # not useful to tf log these
-        values = self.config['evaluation_config']['to_tf_values'](tmp, ["ray", "tune"])
+
+        to_tf_values_fn = self.config["evaluation_config"]["to_tf_values"] \
+            if "evaluation_config" in self.config else to_tf_values
+        values = to_tf_values_fn(tmp, ["ray", "tune"])
         train_stats = tf.Summary(value=values)
         t = result.get(TIMESTEPS_TOTAL) or result[TRAINING_ITERATION]
         self._file_writer.add_summary(train_stats, t)
-        iteration_value = self.config['evaluation_config']['to_tf_values']({
+        iteration_value = to_tf_values_fn({
             "training_iteration": result[TRAINING_ITERATION]
         }, ["ray", "tune"])
         iteration_stats = tf.Summary(value=iteration_value)

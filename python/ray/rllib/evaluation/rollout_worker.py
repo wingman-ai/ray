@@ -572,7 +572,12 @@ class RolloutWorker(EvaluatorInterface):
                     info_out[pid] = policy.learn_on_batch(batch)
             info_out.update({k: builder.get(v) for k, v in to_fetch.items()})
         else:
-            info_out, beholder_arrays = self.policy_map[DEFAULT_POLICY_ID].learn_on_batch(samples)
+            learn_on_batch_outputs = self.policy_map[DEFAULT_POLICY_ID].learn_on_batch(samples)
+
+            if isinstance(learn_on_batch_outputs, tuple):
+                info_out, beholder_arrays = learn_on_batch_outputs
+            else:
+                info_out, beholder_arrays = learn_on_batch_outputs, {}
 
             if self.policy_config["evaluation_config"]["beholder"]:
                 with self.tf_sess.graph.as_default():

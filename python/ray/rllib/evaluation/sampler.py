@@ -339,6 +339,15 @@ def _env_runner(base_env, extra_batch_callback, policies, policy_mapping_fn,
         perf_stats.env_wait_time += time.time() - t4
 
 
+def _get_env_name(base_env):
+    if hasattr(base_env.vector_env, 'envs'):
+        return base_env.vector_env.envs[0].env.name if hasattr(
+            base_env.vector_env.envs[0].env, 'name') else 'nil'
+    else:
+        return base_env.vector_env.env.name if hasattr(
+            base_env.vector_env.env, 'name') else 'nil'
+
+
 def _process_observations(base_env, policies, batch_builder_pool,
                           active_episodes, unfiltered_obs, rewards, dones,
                           infos, off_policy_actions, horizon, preprocessors,
@@ -389,11 +398,7 @@ def _process_observations(base_env, policies, batch_builder_pool,
                     outputs.append(
                         m._replace(custom_metrics=episode.custom_metrics))
             else:
-
-                if hasattr(base_env.vector_env, 'envs'):
-                    env_name = base_env.vector_env.envs[0].env.name
-                else:
-                    env_name = base_env.vector_env.env.name
+                env_name = _get_env_name(base_env)
                 outputs.append(
                     RolloutMetrics({env_name: episode.length}, {env_name: episode.total_reward},
                                    dict(episode.agent_rewards),
@@ -582,7 +587,8 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
         if len(eval_results[policy_id]) == 3:
             actions, rnn_out_cols, pi_info_cols = eval_results[policy_id]
         else:
-            actions, rnn_out_cols, pi_info_cols, state_values, language_inputs = eval_results[policy_id]
+            actions, rnn_out_cols, pi_info_cols, state_values, language_inputs = eval_results[
+                policy_id]
 
         if state_values == []:
             state_values = np.full((actions.shape[0]), 'n/a')
@@ -600,7 +606,8 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
         # Save output rows
         actions = _unbatch_tuple_actions(actions)
         policy = _get_or_raise(policies, policy_id)
-        for i, (action, state_value, language_input) in enumerate(zip(actions, state_values, language_inputs)):
+        for i, (action, state_value, language_input) in enumerate(
+                zip(actions, state_values, language_inputs)):
             env_id = eval_data[i].env_id
             agent_id = eval_data[i].agent_id
             if clip_actions:
@@ -636,16 +643,14 @@ def _fetch_atari_metrics(base_env):
         return None
     atari_out = []
 
-    if hasattr(base_env.vector_env, 'envs'):
-        env_name = base_env.vector_env.envs[0].env.name
-    else:
-        env_name = base_env.vector_env.env.name
+    env_name = _get_env_name(base_env)
     for u in unwrapped:
         monitor = get_wrapper_by_cls(u, MonitorEnv)
         if not monitor:
             return None
         for eps_rew, eps_len in monitor.next_episode_results():
-            atari_out.append(RolloutMetrics({env_name: eps_len}, {env_name: eps_rew}, {}, {}, {}))
+            atari_out.append(RolloutMetrics({env_name: eps_len}, {
+                             env_name: eps_rew}, {}, {}, {}))
     return atari_out
 
 
