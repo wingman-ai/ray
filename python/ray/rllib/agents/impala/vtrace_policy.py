@@ -12,7 +12,7 @@ import gym
 import numpy as np
 import ray
 from ray.rllib.agents.impala import vtrace
-from ray.rllib.models.action_dist import Categorical
+from ray.rllib.models.tf.tf_action_dist import Categorical
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.policy.tf_policy import LearningRateSchedule, \
     EntropyCoeffSchedule
@@ -186,7 +186,8 @@ def build_vtrace_loss(policy, batch_tensors):
             actions=make_time_major(loss_actions, drop_last=True),
             actions_logp=make_time_major(
                 action_dist.logp(actions), drop_last=True),
-            actions_entropy=make_time_major(action_dist.entropy(), drop_last=True),
+            actions_entropy=make_time_major(
+                action_dist.multi_entropy(), drop_last=True),
             dones=make_time_major(dones, drop_last=True),
             behaviour_logits=make_time_major(
                 unpacked_behaviour_logits, drop_last=True),
@@ -245,8 +246,9 @@ def add_behaviour_logits(policy):
 
 
 def validate_config(policy, obs_space, action_space, config):
-    assert config["batch_mode"] == "truncate_episodes", \
-        "Must use `truncate_episodes` batch mode with V-trace."
+    if config["vtrace"]:
+        assert config["batch_mode"] == "truncate_episodes", \
+            "Must use `truncate_episodes` batch mode with V-trace."
 
 
 def choose_optimizer(policy, config):
