@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import click
 import logging
 import time
 
@@ -33,6 +34,30 @@ def _make_scheduler(args):
     else:
         raise TuneError("Unknown scheduler: {}, should be one of {}".format(
             args.scheduler, _SCHEDULERS.keys()))
+
+
+def _prompt_restore(checkpoint_dir, resume):
+    restore = False
+    if TrialRunner.checkpoint_exists(checkpoint_dir):
+        if resume == "prompt":
+            msg = ("Found incomplete experiment at {}. "
+                   "Would you like to resume it?".format(checkpoint_dir))
+            restore = click.confirm(msg, default=False)
+            if restore:
+                logger.info("Tip: to always resume, "
+                            "pass resume=True to run()")
+            else:
+                logger.info("Tip: to always start a new experiment, "
+                            "pass resume=False to run()")
+        elif resume:
+            restore = True
+        else:
+            logger.info("Tip: to resume incomplete experiments, "
+                        "pass resume='prompt' or resume=True to run()")
+    else:
+        logger.info(
+            "Did not find checkpoint file in {}.".format(checkpoint_dir))
+    return restore
 
 
 def run(run_or_experiment,
@@ -220,6 +245,77 @@ def run(run_or_experiment,
     if sync_to_cloud:
         assert experiment.remote_checkpoint_dir, (
             "Need `upload_dir` if `sync_to_cloud` given.")
+
+    checkpoint_dir = experiment.checkpoint_dir
+    should_restore = _prompt_restore(checkpoint_dir, resume)
+
+    runner = None
+    if should_restore:
+        try:
+            runner = TrialRunner.restore(checkpoint_dir, search_alg, scheduler,
+                                         trial_executor)
+
+            import collections
+            import sys
+            import numpy as np
+
+            def tae_lp_override_check_model(restored_value, new_value):
+                restored_subnetwork_exists = not np.isclose(restored_value, 0)
+                new_subnetwork_exists = not (np.isscalar(new_value) and np.isclose(new_value, 0))
+
+                return restored_subnetwork_exists == new_subnetwork_exists
+
+            def override_flags(restored_config, new_config, flags_to_override):
+                for k, v in flags_to_override.items():
+                    if isinstance(v, collections.Mapping):
+                        override_flags(restored_config[k], new_config[k], flags_to_override[k])
+                    elif v is None or callable(v):
+                        if k in explicitly_defined_flags or k == '_fake_sampler':
+                            assert v is None or v(restored_config[k], new_config[k]), "Restored and new model differ"
+                            if any(isinstance(new_config[k], cls) for cls in [int, float, bool, str]):
+                                restored_config[k] = new_config[k]
+                    else:
+                        raise ValueError('Values of flags_to_override dict should be dict, None or methods')
+
+            restored_config = runner._trials[0].config
+            new_config = experiment.spec['config']
+            flags_to_override_to_model_check_dict = {
+                'grad_clip': None,
+                'lr': None,
+                'entropy_coeff': None,
+                'vf_loss_coeff': None,
+                '_fake_sampler': None,
+                'model': {
+                    'custom_options': {
+                        'lp_coeff': tae_lp_override_check_model,
+                        'tae_coeff': tae_lp_override_check_model,
+                        'debug': None,
+                        'imit_coeff': None,
+                        'dataset_path': None,
+                        'val_dataset_path': None,
+                    },
+                },
+                'num_workers': None,
+                'num_envs_per_worker': None,
+            }
+
+            explicitly_defined_flags = set([arg[2:] for arg in sys.argv if arg.startswith('--')])
+            override_flags(restored_config, new_config, flags_to_override_to_model_check_dict)
+
+            if 'checkpoint_freq' in explicitly_defined_flags:
+                runner._trials[0].checkpoint_freq = experiment.spec['checkpoint_freq']
+
+            if runner._trials[0].status == Trial.ERROR:
+                runner._trials[0].init_logger()
+                runner._try_recover(runner._trials[0], error_msg=None)
+
+            old_res = runner._trials[0].resources
+            runner._trials[0].resources = Resources(old_res.cpu, old_res.gpu, 1.0, old_res.extra_gpu,
+                                                    old_res.custom_resources, old_res.extra_custom_resources)
+        except Exception:
+            logger.exception("Runner restore failed. Restarting experiment.")
+    else:
+        logger.info("Starting a new experiment.")
 
     runner = TrialRunner(
         search_alg=search_alg or BasicVariantGenerator(),
