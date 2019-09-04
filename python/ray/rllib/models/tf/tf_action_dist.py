@@ -110,7 +110,7 @@ class MultiCategorical(TFActionDistribution):
 
     @override(ActionDistribution)
     def kl(self, other):
-        return tf.reduce_sum(self.multi_kl(other), axis=1)
+        return tf.reduce_sum(tf.concat(self.multi_kl(other), axis=1)[:, tf.newaxis], axis=1)
 
     @override(TFActionDistribution)
     def _build_sample_op(self):
