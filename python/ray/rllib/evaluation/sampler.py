@@ -594,9 +594,16 @@ def _process_policy_eval_results(to_eval, eval_results, active_episodes,
                 policy_id]
 
         if state_values == []:
-            state_values = np.full((actions.shape[0]), 'n/a')
+            if isinstance(actions, TupleActions):
+                state_values = np.full((actions.batches[0].shape[0]), 'n/a')
+            else:
+                state_values = np.full((actions.shape[0]), 'n/a')
+
         if language_inputs == []:
-            language_inputs = np.full((actions.shape[0], 1), 'n/a')
+            if isinstance(actions, TupleActions):
+                language_inputs = np.full((actions.batches[0].shape[0], 1), 'n/a')
+            else:
+                language_inputs = np.full((actions.shape[0], 1), 'n/a')
 
         if len(rnn_in_cols) != len(rnn_out_cols):
             raise ValueError("Length of RNN in did not match RNN out, got: "
