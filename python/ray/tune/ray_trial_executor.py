@@ -11,6 +11,8 @@ import time
 import traceback
 
 import ray
+from ray import ray_constants
+from ray.resource_spec import ResourceSpec
 from ray.tune.error import AbortTrialExecution
 from ray.tune.logger import NoopLogger
 from ray.tune.trial import Trial, Checkpoint
@@ -43,6 +45,9 @@ class RayTrialExecutor(TrialExecutor):
                  ray_auto_init=False,
                  refresh_period=RESOURCE_REFRESH_PERIOD):
         super(RayTrialExecutor, self).__init__(queue_trials)
+        # Check for if we are launching a trial without resources in kick off
+        # autoscaler.
+        self._trial_queued = False
         self._running = {}
         # Since trial resume after paused should not run
         # trial.train.remote(), thus no more new remote object id generated.
@@ -85,8 +90,10 @@ class RayTrialExecutor(TrialExecutor):
             cls = ray.remote(
                 num_cpus=trial.resources.cpu,
                 num_gpus=trial.resources.gpu,
+                memory=trial.resources.memory,
+                object_store_memory=trial.resources.object_store_memory,
                 resources=trial.resources.custom_resources)(
-                    trial._get_trainable_cls())
+                    trial.get_trainable_cls())
 
         trial.init_logger()
         # We checkpoint metadata here to try mitigating logdir duplication
@@ -97,7 +104,7 @@ class RayTrialExecutor(TrialExecutor):
             trial.runner = existing_runner
             if not self.reset_trial(trial, trial.config, trial.experiment_tag):
                 raise AbortTrialExecution(
-                    "Trial runner reuse requires reset_trial() to be "
+                    "Trainable runner reuse requires reset_config() to be "
                     "implemented and return True.")
             return existing_runner
 
@@ -297,18 +304,22 @@ class RayTrialExecutor(TrialExecutor):
     def get_current_trial_ips(self):
         return {t.node_ip for t in self.get_running_trials()}
 
-    def get_next_available_trial(self):
+    def get_next_failed_trial(self):
+        """Gets the first trial found to be running on a node presumed dead.
+
+        Returns:
+            A Trial object that is ready for failure processing. None if
+            no failure detected.
+        """
         if ray.worker._mode() != ray.worker.LOCAL_MODE:
             live_cluster_ips = self.get_alive_node_ips()
             if live_cluster_ips - self.get_current_trial_ips():
                 for trial in self.get_running_trials():
                     if trial.node_ip and trial.node_ip not in live_cluster_ips:
-                        logger.warning(
-                            "{} (ip: {}) detected as stale. This is likely "
-                            "because the node was lost. Processing this "
-                            "trial first.".format(trial, trial.node_ip))
                         return trial
+        return None
 
+    def get_next_available_trial(self):
         shuffled_results = list(self._running.keys())
         random.shuffle(shuffled_results)
         # Note: We shuffle the results because `ray.wait` by default returns
@@ -321,7 +332,7 @@ class RayTrialExecutor(TrialExecutor):
         if wait_time > NONTRIVIAL_WAIT_TIME_THRESHOLD_S:
             self._last_nontrivial_wait = time.time()
         if time.time() - self._last_nontrivial_wait > BOTTLENECK_WARN_PERIOD_S:
-            logger.warn(
+            logger.warning(
                 "Over the last {} seconds, the Tune event loop has been "
                 "backlogged processing new results. Consider increasing your "
                 "period of result reporting to improve performance.".format(
@@ -360,6 +371,9 @@ class RayTrialExecutor(TrialExecutor):
         self._committed_resources = Resources(
             committed.cpu + resources.cpu_total(),
             committed.gpu + resources.gpu_total(),
+            committed.memory + resources.memory_total(),
+            committed.object_store_memory +
+            resources.object_store_memory_total(),
             custom_resources=custom_resources)
 
     def _return_resources(self, resources):
@@ -388,8 +402,7 @@ class RayTrialExecutor(TrialExecutor):
                 # TODO(rliaw): Remove this when local mode is fixed.
                 # https://github.com/ray-project/ray/issues/4147
                 logger.debug("Using resources for local machine.")
-                resources = ray.services.check_and_update_resources(
-                    None, None, None)
+                resources = ResourceSpec().resolve(True).to_resource_dict()
             if not resources:
                 logger.warning(
                     "Cluster resources not detected or are 0. Retrying...")
@@ -407,10 +420,17 @@ class RayTrialExecutor(TrialExecutor):
         resources = resources.copy()
         num_cpus = resources.pop("CPU", 0)
         num_gpus = resources.pop("GPU", 0)
+        memory = ray_constants.from_memory_units(resources.pop("memory", 0))
+        object_store_memory = ray_constants.from_memory_units(
+            resources.pop("object_store_memory", 0))
         custom_resources = resources
 
         self._avail_resources = Resources(
-            int(num_cpus), int(num_gpus), custom_resources=custom_resources)
+            int(num_cpus),
+            int(num_gpus),
+            memory=int(memory),
+            object_store_memory=int(object_store_memory),
+            custom_resources=custom_resources)
         self._last_resource_refresh = time.time()
         self._resources_initialized = True
 
@@ -429,23 +449,22 @@ class RayTrialExecutor(TrialExecutor):
 
         have_space = (
             resources.cpu_total() <= currently_available.cpu
-            and resources.gpu_total() <= currently_available.gpu and all(
+            and resources.gpu_total() <= currently_available.gpu
+            and resources.memory_total() <= currently_available.memory
+            and resources.object_store_memory_total() <=
+            currently_available.object_store_memory and all(
                 resources.get_res_total(res) <= currently_available.get(res)
                 for res in resources.custom_resources))
 
         if have_space:
+            # The assumption right now is that we block all trials if one
+            # trial is queued.
+            self._trial_queued = False
             return True
 
-        can_overcommit = self._queue_trials
-
-        if (resources.cpu_total() > 0 and currently_available.cpu <= 0) or \
-           (resources.gpu_total() > 0 and currently_available.gpu <= 0) or \
-           any((resources.get_res_total(res_name) > 0
-                and currently_available.get(res_name) <= 0)
-               for res_name in resources.custom_resources):
-            can_overcommit = False  # requested resource is already saturated
-
+        can_overcommit = self._queue_trials and not self._trial_queued
         if can_overcommit:
+            self._trial_queued = True
             logger.warning(
                 "Allowing trial to start even though the "
                 "cluster does not have enough free resources. Trial actors "
@@ -461,14 +480,23 @@ class RayTrialExecutor(TrialExecutor):
         """Returns a human readable message for printing to the console."""
 
         if self._resources_initialized:
-            status = "Resources requested: {}/{} CPUs, {}/{} GPUs".format(
-                self._committed_resources.cpu, self._avail_resources.cpu,
-                self._committed_resources.gpu, self._avail_resources.gpu)
+            status = ("Resources requested: {}/{} CPUs, {}/{} GPUs, "
+                      "{}/{} GiB heap, {}/{} GiB objects".format(
+                          self._committed_resources.cpu,
+                          self._avail_resources.cpu,
+                          self._committed_resources.gpu,
+                          self._avail_resources.gpu,
+                          _to_gb(self._committed_resources.memory),
+                          _to_gb(self._avail_resources.memory),
+                          _to_gb(
+                              self._committed_resources.object_store_memory),
+                          _to_gb(self._avail_resources.object_store_memory)))
             customs = ", ".join([
                 "{}/{} {}".format(
                     self._committed_resources.get_res_total(name),
                     self._avail_resources.get_res_total(name), name)
                 for name in self._avail_resources.custom_resources
+                if not name.startswith(ray.resource_spec.NODE_ID_PREFIX)
             ])
             if customs:
                 status += " ({})".format(customs)
@@ -480,8 +508,12 @@ class RayTrialExecutor(TrialExecutor):
         """Returns a string describing the total resources available."""
 
         if self._resources_initialized:
-            res_str = "{} CPUs, {} GPUs".format(self._avail_resources.cpu,
-                                                self._avail_resources.gpu)
+            res_str = ("{} CPUs, {} GPUs, "
+                       "{} GiB heap, {} GiB objects".format(
+                           self._avail_resources.cpu,
+                           self._avail_resources.gpu,
+                           _to_gb(self._avail_resources.memory),
+                           _to_gb(self._avail_resources.object_store_memory)))
             if self._avail_resources.custom_resources:
                 custom = ", ".join(
                     "{} {}".format(
@@ -492,7 +524,7 @@ class RayTrialExecutor(TrialExecutor):
         else:
             return "? CPUs, ? GPUs"
 
-    def on_step_begin(self):
+    def on_step_begin(self, trial_runner):
         """Before step() called, update the available resources."""
         self._update_avail_resources()
 
@@ -609,3 +641,12 @@ class RayTrialExecutor(TrialExecutor):
             return ray.get(
                 trial.runner.export_model.remote(trial.export_formats))
         return {}
+
+    def has_gpus(self):
+        if self._resources_initialized:
+            self._update_avail_resources()
+            return self._avail_resources.gpu > 0
+
+
+def _to_gb(n_bytes):
+    return round(n_bytes / (1024**3), 2)

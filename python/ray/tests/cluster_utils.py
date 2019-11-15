@@ -45,13 +45,17 @@ class Cluster(object):
             if connect:
                 self.connect()
 
+    @property
+    def address(self):
+        return self.redis_address
+
     def connect(self):
         """Connect the driver to the cluster."""
         assert self.redis_address is not None
         assert not self.connected
         output_info = ray.init(
             ignore_reinit_error=True,
-            redis_address=self.redis_address,
+            address=self.redis_address,
             redis_password=self.redis_password)
         logger.info(output_info)
         self.connected = True
@@ -62,7 +66,7 @@ class Cluster(object):
         All nodes are by default started with the following settings:
             cleanup=True,
             num_cpus=1,
-            object_store_memory=100 * (2**20) # 100 MB
+            object_store_memory=150 * 1024 * 1024  # 150 MiB
 
         Args:
             node_args: Keyword arguments used in `start_ray_head` and
@@ -74,9 +78,10 @@ class Cluster(object):
         default_kwargs = {
             "num_cpus": 1,
             "num_gpus": 0,
-            "object_store_memory": 100 * (2**20),  # 100 MB
+            "object_store_memory": 150 * 1024 * 1024,  # 150 MiB
         }
         ray_params = ray.parameter.RayParams(**node_args)
+        ray_params.use_pickle = ray.cloudpickle.FAST_CLOUDPICKLE_USED
         ray_params.update_if_absent(**default_kwargs)
         if self.head_node is None:
             node = ray.node.Node(
@@ -87,6 +92,8 @@ class Cluster(object):
             self.webui_url = self.head_node.webui_url
         else:
             ray_params.update_if_absent(redis_address=self.redis_address)
+            # Let grpc pick a port.
+            ray_params.update(node_manager_port=0)
             node = ray.node.Node(
                 ray_params,
                 head=False,
@@ -102,7 +109,7 @@ class Cluster(object):
 
         return node
 
-    def remove_node(self, node, allow_graceful=False):
+    def remove_node(self, node, allow_graceful=True):
         """Kills all processes associated with worker node.
 
         Args:
@@ -167,7 +174,7 @@ class Cluster(object):
             Exception: An exception is raised if we time out while waiting for
                 nodes to join.
         """
-        ip_address, port = self.redis_address.split(":")
+        ip_address, port = self.address.split(":")
         redis_client = redis.StrictRedis(
             host=ip_address, port=int(port), password=self.redis_password)
 

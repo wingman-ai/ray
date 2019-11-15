@@ -5,6 +5,7 @@ from __future__ import print_function
 import copy
 import glob
 import os
+import numpy as np
 import shutil
 import sys
 import tempfile
@@ -20,12 +21,12 @@ from ray.tune import register_env, register_trainable, run_experiments
 from ray.tune.ray_trial_executor import RayTrialExecutor
 from ray.tune.schedulers import TrialScheduler, FIFOScheduler
 from ray.tune.registry import _global_registry, TRAINABLE_CLASS
-from ray.tune.result import (DEFAULT_RESULTS_DIR, TIMESTEPS_TOTAL, DONE,
-                             HOSTNAME, NODE_IP, PID, EPISODES_TOTAL,
-                             TRAINING_ITERATION, TIMESTEPS_THIS_ITER,
-                             TIME_THIS_ITER_S, TIME_TOTAL_S, TRIAL_ID)
+from ray.tune.result import (
+    DEFAULT_RESULTS_DIR, TIMESTEPS_TOTAL, DONE, HOSTNAME, NODE_IP, PID,
+    EPISODES_TOTAL, TRAINING_ITERATION, TIMESTEPS_THIS_ITER, TIME_THIS_ITER_S,
+    TIME_TOTAL_S, TRIAL_ID, EXPERIMENT_TAG)
 from ray.tune.logger import Logger
-from ray.tune.util import pin_in_object_store, get_pinned_object
+from ray.tune.util import pin_in_object_store, get_pinned_object, flatten_dict
 from ray.tune.experiment import Experiment
 from ray.tune.trial import Trial, ExportFormat
 from ray.tune.trial_runner import TrialRunner
@@ -44,7 +45,7 @@ else:
 
 class TrainableFunctionApiTest(unittest.TestCase):
     def setUp(self):
-        ray.init(num_cpus=4, num_gpus=0)
+        ray.init(num_cpus=4, num_gpus=0, object_store_memory=150 * 1024 * 1024)
 
     def tearDown(self):
         ray.shutdown()
@@ -116,6 +117,7 @@ class TrainableFunctionApiTest(unittest.TestCase):
             HOSTNAME,
             NODE_IP,
             TRIAL_ID,
+            EXPERIMENT_TAG,
             PID,
             TIME_THIS_ITER_S,
             TIME_TOTAL_S,
@@ -213,11 +215,15 @@ class TrainableFunctionApiTest(unittest.TestCase):
             pass
 
         register_trainable("foo", train)
+        Experiment("test", train)
         register_trainable("foo", B)
+        Experiment("test", B)
         self.assertRaises(TypeError, lambda: register_trainable("foo", B()))
+        self.assertRaises(TuneError, lambda: Experiment("foo", B()))
         self.assertRaises(TypeError, lambda: register_trainable("foo", A))
+        self.assertRaises(TypeError, lambda: Experiment("foo", A))
 
-    def testRegisterTrainableCallable(self):
+    def testTrainableCallable(self):
         def dummy_fn(config, reporter, steps):
             reporter(timesteps_total=steps, done=True)
 
@@ -229,6 +235,9 @@ class TrainableFunctionApiTest(unittest.TestCase):
                 "run": "test",
             }
         })
+        self.assertEqual(trial.status, Trial.TERMINATED)
+        self.assertEqual(trial.last_result[TIMESTEPS_TOTAL], steps)
+        [trial] = tune.run(partial(dummy_fn, steps=steps)).trials
         self.assertEqual(trial.status, Trial.TERMINATED)
         self.assertEqual(trial.last_result[TIMESTEPS_TOTAL], steps)
 
@@ -260,9 +269,6 @@ class TrainableFunctionApiTest(unittest.TestCase):
         self.assertEqual(f(0, 0, False).status, Trial.TERMINATED)
         self.assertEqual(f(1, 0, True).status, Trial.TERMINATED)
         self.assertEqual(f(1, 0, True).status, Trial.TERMINATED)
-
-        # Infeasible even with queueing enabled (no gpus)
-        self.assertRaises(TuneError, lambda: f(1, 1, True))
 
         # Too large resource request
         self.assertRaises(TuneError, lambda: f(100, 100, False))
@@ -433,15 +439,57 @@ class TrainableFunctionApiTest(unittest.TestCase):
             for i in range(10):
                 reporter(test={"test1": {"test2": i}})
 
-        [trial] = tune.run(
-            train, stop={
-                "test": {
-                    "test1": {
-                        "test2": 6
+        with self.assertRaises(TuneError):
+            [trial] = tune.run(
+                train, stop={
+                    "test": {
+                        "test1": {
+                            "test2": 6
+                        }
                     }
-                }
-            }).trials
+                }).trials
+        [trial] = tune.run(train, stop={"test/test1/test2": 6}).trials
         self.assertEqual(trial.last_result["training_iteration"], 7)
+
+    def testStoppingFunction(self):
+        def train(config, reporter):
+            for i in range(10):
+                reporter(test=i)
+
+        def stop(trial_id, result):
+            return result["test"] > 6
+
+        [trial] = tune.run(train, stop=stop).trials
+        self.assertEqual(trial.last_result["training_iteration"], 8)
+
+    def testStoppingMemberFunction(self):
+        def train(config, reporter):
+            for i in range(10):
+                reporter(test=i)
+
+        class Stopper:
+            def stop(self, trial_id, result):
+                return result["test"] > 6
+
+        [trial] = tune.run(train, stop=Stopper().stop).trials
+        self.assertEqual(trial.last_result["training_iteration"], 8)
+
+    def testBadStoppingFunction(self):
+        def train(config, reporter):
+            for i in range(10):
+                reporter(test=i)
+
+        class Stopper:
+            def stop(self, result):
+                return result["test"] > 6
+
+        def stop(result):
+            return result["test"] > 6
+
+        with self.assertRaises(ValueError):
+            tune.run(train, stop=Stopper().stop)
+        with self.assertRaises(ValueError):
+            tune.run(train, stop=stop)
 
     def testEarlyReturn(self):
         def train(config, reporter):
@@ -456,6 +504,15 @@ class TrainableFunctionApiTest(unittest.TestCase):
         })
         self.assertEqual(trial.status, Trial.TERMINATED)
         self.assertEqual(trial.last_result[TIMESTEPS_TOTAL], 100)
+
+    def testReporterNoUsage(self):
+        def run_task(config, reporter):
+            print("hello")
+
+        experiment = Experiment(run=run_task, name="ray_crash_repro")
+        [trial] = ray.tune.run(experiment).trials
+        print(trial.last_result)
+        self.assertEqual(trial.last_result[DONE], True)
 
     def testErrorReturn(self):
         def train(config, reporter):
@@ -513,6 +570,53 @@ class TrainableFunctionApiTest(unittest.TestCase):
         })
         self.assertEqual(trial.status, Trial.TERMINATED)
         self.assertEqual(trial.last_result["mean_accuracy"], float("inf"))
+
+    def testNestedResults(self):
+        def create_result(i):
+            return {"test": {"1": {"2": {"3": i, "4": False}}}}
+
+        flattened_keys = list(flatten_dict(create_result(0)))
+
+        class _MockScheduler(FIFOScheduler):
+            results = []
+
+            def on_trial_result(self, trial_runner, trial, result):
+                self.results += [result]
+                return TrialScheduler.CONTINUE
+
+            def on_trial_complete(self, trial_runner, trial, result):
+                self.complete_result = result
+
+        def train(config, reporter):
+            for i in range(100):
+                reporter(**create_result(i))
+
+        algo = _MockSuggestionAlgorithm()
+        scheduler = _MockScheduler()
+        [trial] = tune.run(
+            train,
+            scheduler=scheduler,
+            search_alg=algo,
+            stop={
+                "test/1/2/3": 20
+            }).trials
+        self.assertEqual(trial.status, Trial.TERMINATED)
+        self.assertEqual(trial.last_result["test"]["1"]["2"]["3"], 20)
+        self.assertEqual(trial.last_result["test"]["1"]["2"]["4"], False)
+        self.assertEqual(trial.last_result[TRAINING_ITERATION], 21)
+        self.assertEqual(len(scheduler.results), 20)
+        self.assertTrue(
+            all(
+                set(result) >= set(flattened_keys)
+                for result in scheduler.results))
+        self.assertTrue(set(scheduler.complete_result) >= set(flattened_keys))
+        self.assertEqual(len(algo.results), 20)
+        self.assertTrue(
+            all(set(result) >= set(flattened_keys) for result in algo.results))
+        with self.assertRaises(TuneError):
+            [trial] = tune.run(train, stop={"1/2/3": 20})
+        with self.assertRaises(TuneError):
+            [trial] = tune.run(train, stop={"test": 1}).trials
 
     def testReportTimeStep(self):
         # Test that no timestep count are logged if never the Trainable never
@@ -704,9 +808,6 @@ class TrainableFunctionApiTest(unittest.TestCase):
 
 
 class RunExperimentTest(unittest.TestCase):
-    def setUp(self):
-        ray.init()
-
     def tearDown(self):
         ray.shutdown()
         _register_all()  # re-register the evicted objects
@@ -916,8 +1017,8 @@ class RunExperimentTest(unittest.TestCase):
                 "stop": {
                     "training_iteration": 1
                 },
-                "trial_name_creator": tune.function(
-                    lambda t: "{}_{}_321".format(t.trainable_name, t.trial_id))
+                "trial_name_creator":
+                    lambda t: "{}_{}_321".format(t.trainable_name, t.trial_id)
             }
         })
         self.assertEquals(
@@ -1057,7 +1158,7 @@ class TestSyncFunctionality(unittest.TestCase):
                 "training_iteration": 1
             },
             upload_dir=tmpdir2,
-            sync_to_cloud=tune.function(sync_func)).trials
+            sync_to_cloud=sync_func).trials
         test_file_path = glob.glob(os.path.join(tmpdir2, "foo", "*.json"))
         self.assertTrue(test_file_path)
         shutil.rmtree(tmpdir)
@@ -1078,7 +1179,7 @@ class TestSyncFunctionality(unittest.TestCase):
             stop={
                 "training_iteration": 1
             },
-            sync_to_driver=tune.function(sync_func_driver)).trials
+            sync_to_driver=sync_func_driver).trials
         test_file_path = os.path.join(trial.logdir, "test.log2")
         self.assertFalse(os.path.exists(test_file_path))
 
@@ -1091,12 +1192,14 @@ class TestSyncFunctionality(unittest.TestCase):
                 stop={
                     "training_iteration": 1
                 },
-                sync_to_driver=tune.function(sync_func_driver)).trials
+                sync_to_driver=sync_func_driver).trials
         test_file_path = os.path.join(trial.logdir, "test.log2")
         self.assertTrue(os.path.exists(test_file_path))
         os.remove(test_file_path)
 
     def testNoSync(self):
+        """Sync should not run on a single node."""
+
         def sync_func(source, target):
             pass
 
@@ -1109,9 +1212,7 @@ class TestSyncFunctionality(unittest.TestCase):
                     "stop": {
                         "training_iteration": 1
                     },
-                    "upload_dir": "test",
-                    "sync_to_driver": tune.function(sync_func),
-                    "sync_to_cloud": tune.function(sync_func)
+                    "sync_to_driver": sync_func
                 }).trials
             self.assertEqual(mock_sync.call_count, 0)
 
@@ -1141,11 +1242,12 @@ class VariantGeneratorTest(unittest.TestCase):
         }, "tune-pong")
         trials = list(trials)
         self.assertEqual(len(trials), 2)
-        self.assertEqual(str(trials[0]), "PPO_Pong-v0_0")
+        self.assertTrue("PPO_Pong-v0" in str(trials[0]))
         self.assertEqual(trials[0].config, {"foo": "bar", "env": "Pong-v0"})
         self.assertEqual(trials[0].trainable_name, "PPO")
         self.assertEqual(trials[0].experiment_tag, "0")
         self.assertEqual(trials[0].max_failures, 5)
+        self.assertEqual(trials[0].evaluated_params, {})
         self.assertEqual(trials[0].local_dir,
                          os.path.join(DEFAULT_RESULTS_DIR, "tune-pong"))
         self.assertEqual(trials[1].experiment_tag, "1")
@@ -1162,6 +1264,7 @@ class VariantGeneratorTest(unittest.TestCase):
         trials = list(trials)
         self.assertEqual(len(trials), 1)
         self.assertEqual(trials[0].config, {"foo": 4})
+        self.assertEqual(trials[0].evaluated_params, {"foo": 4})
         self.assertEqual(trials[0].experiment_tag, "0_foo=4")
 
     def testGridSearch(self):
@@ -1174,18 +1277,72 @@ class VariantGeneratorTest(unittest.TestCase):
                 "foo": {
                     "grid_search": [1, 2, 3]
                 },
+                "baz": "asd",
             },
         }, "grid_search")
         trials = list(trials)
         self.assertEqual(len(trials), 6)
-        self.assertEqual(trials[0].config, {"bar": True, "foo": 1})
+        self.assertEqual(trials[0].config, {
+            "bar": True,
+            "foo": 1,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[0].evaluated_params, {
+            "bar": True,
+            "foo": 1,
+        })
         self.assertEqual(trials[0].experiment_tag, "0_bar=True,foo=1")
-        self.assertEqual(trials[1].config, {"bar": False, "foo": 1})
+
+        self.assertEqual(trials[1].config, {
+            "bar": False,
+            "foo": 1,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[1].evaluated_params, {
+            "bar": False,
+            "foo": 1,
+        })
         self.assertEqual(trials[1].experiment_tag, "1_bar=False,foo=1")
-        self.assertEqual(trials[2].config, {"bar": True, "foo": 2})
-        self.assertEqual(trials[3].config, {"bar": False, "foo": 2})
-        self.assertEqual(trials[4].config, {"bar": True, "foo": 3})
-        self.assertEqual(trials[5].config, {"bar": False, "foo": 3})
+
+        self.assertEqual(trials[2].config, {
+            "bar": True,
+            "foo": 2,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[2].evaluated_params, {
+            "bar": True,
+            "foo": 2,
+        })
+
+        self.assertEqual(trials[3].config, {
+            "bar": False,
+            "foo": 2,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[3].evaluated_params, {
+            "bar": False,
+            "foo": 2,
+        })
+
+        self.assertEqual(trials[4].config, {
+            "bar": True,
+            "foo": 3,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[4].evaluated_params, {
+            "bar": True,
+            "foo": 3,
+        })
+
+        self.assertEqual(trials[5].config, {
+            "bar": False,
+            "foo": 3,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[5].evaluated_params, {
+            "bar": False,
+            "foo": 3,
+        })
 
     def testGridSearchAndEval(self):
         trials = self.generate_trials({
@@ -1194,11 +1351,22 @@ class VariantGeneratorTest(unittest.TestCase):
                 "qux": tune.sample_from(lambda spec: 2 + 2),
                 "bar": grid_search([True, False]),
                 "foo": grid_search([1, 2, 3]),
+                "baz": "asd",
             },
         }, "grid_eval")
         trials = list(trials)
         self.assertEqual(len(trials), 6)
-        self.assertEqual(trials[0].config, {"bar": True, "foo": 1, "qux": 4})
+        self.assertEqual(trials[0].config, {
+            "bar": True,
+            "foo": 1,
+            "qux": 4,
+            "baz": "asd",
+        })
+        self.assertEqual(trials[0].evaluated_params, {
+            "bar": True,
+            "foo": 1,
+            "qux": 4,
+        })
         self.assertEqual(trials[0].experiment_tag, "0_bar=True,foo=1,qux=4")
 
     def testConditionResolution(self):
@@ -1213,6 +1381,8 @@ class VariantGeneratorTest(unittest.TestCase):
         trials = list(trials)
         self.assertEqual(len(trials), 1)
         self.assertEqual(trials[0].config, {"x": 1, "y": 2, "z": 3})
+        self.assertEqual(trials[0].evaluated_params, {"y": 2, "z": 3})
+        self.assertEqual(trials[0].experiment_tag, "0_y=2,z=3")
 
     def testDependentLambda(self):
         trials = self.generate_trials({
@@ -1242,6 +1412,47 @@ class VariantGeneratorTest(unittest.TestCase):
         self.assertEqual(len(trials), 2)
         self.assertEqual(trials[0].config, {"x": 100, "y": 1})
         self.assertEqual(trials[1].config, {"x": 200, "y": 1})
+
+    def testNestedValues(self):
+        trials = self.generate_trials({
+            "run": "PPO",
+            "config": {
+                "x": {
+                    "y": {
+                        "z": tune.sample_from(lambda spec: 1)
+                    }
+                },
+                "y": tune.sample_from(lambda spec: 12),
+                "z": tune.sample_from(lambda spec: spec.config.x.y.z * 100),
+            },
+        }, "nested_values")
+        trials = list(trials)
+        self.assertEqual(len(trials), 1)
+        self.assertEqual(trials[0].config, {
+            "x": {
+                "y": {
+                    "z": 1
+                }
+            },
+            "y": 12,
+            "z": 100
+        })
+        self.assertEqual(trials[0].evaluated_params, {
+            "x/y/z": 1,
+            "y": 12,
+            "z": 100
+        })
+
+    def testLogUniform(self):
+        sampler = tune.loguniform(1e-10, 1e-1).func
+        results = [sampler(None) for i in range(1000)]
+        assert abs(np.log(min(results)) / np.log(10) - -10) < 0.1
+        assert abs(np.log(max(results)) / np.log(10) - -1) < 0.1
+
+        sampler_e = tune.loguniform(np.e**-4, np.e, base=np.e).func
+        results_e = [sampler_e(None) for i in range(1000)]
+        assert abs(np.log(min(results_e)) - -4) < 0.1
+        assert abs(np.log(max(results_e)) - 1) < 0.1
 
     def test_resolve_dict(self):
         config = {
@@ -1463,6 +1674,14 @@ class TrialRunnerTest(unittest.TestCase):
         self.assertEqual(trials[1].status, Trial.RUNNING)
         self.assertEqual(trials[2].status, Trial.PENDING)
         self.assertEqual(trials[3].status, Trial.PENDING)
+
+    def testResourceNumericalError(self):
+        resource = Resources(cpu=0.99, gpu=0.99, custom_resources={"a": 0.99})
+        small_resource = Resources(
+            cpu=0.33, gpu=0.33, custom_resources={"a": 0.33})
+        for i in range(3):
+            resource = Resources.subtract(resource, small_resource)
+        self.assertTrue(resource.is_nonnegative())
 
     def testResourceScheduler(self):
         ray.init(num_cpus=4, num_gpus=1)
@@ -1862,12 +2081,12 @@ class TrialRunnerTest(unittest.TestCase):
         ray.init(num_cpus=4, num_gpus=2)
         runner = TrialRunner()
 
-        def on_step_begin(self):
+        def on_step_begin(self, trialrunner):
             self._update_avail_resources()
             cnt = self.pre_step if hasattr(self, "pre_step") else 0
             setattr(self, "pre_step", cnt + 1)
 
-        def on_step_end(self):
+        def on_step_end(self, trialrunner):
             cnt = self.pre_step if hasattr(self, "post_step") else 0
             setattr(self, "post_step", 1 + cnt)
 
@@ -1996,6 +2215,30 @@ class TrialRunnerTest(unittest.TestCase):
         self.assertEqual(len(searcher.live_trials), 0)
         self.assertTrue(searcher.is_finished())
         self.assertTrue(runner.is_finished())
+
+    def testSearchAlgSchedulerEarlyStop(self):
+        """Early termination notif to Searcher can be turned off."""
+
+        class _MockScheduler(FIFOScheduler):
+            def on_trial_result(self, *args, **kwargs):
+                return TrialScheduler.STOP
+
+        ray.init(num_cpus=4, num_gpus=2)
+        experiment_spec = {"run": "__fake", "stop": {"training_iteration": 2}}
+        experiments = [Experiment.from_json("test", experiment_spec)]
+        searcher = _MockSuggestionAlgorithm(use_early_stopped_trials=True)
+        searcher.add_configurations(experiments)
+        runner = TrialRunner(search_alg=searcher, scheduler=_MockScheduler())
+        runner.step()
+        runner.step()
+        self.assertEqual(len(searcher.final_results), 1)
+
+        searcher = _MockSuggestionAlgorithm(use_early_stopped_trials=False)
+        searcher.add_configurations(experiments)
+        runner = TrialRunner(search_alg=searcher, scheduler=_MockScheduler())
+        runner.step()
+        runner.step()
+        self.assertEqual(len(searcher.final_results), 0)
 
     def testSearchAlgStalled(self):
         """Checks that runner and searcher state is maintained when stalled."""
@@ -2206,11 +2449,9 @@ class TrialRunnerTest(unittest.TestCase):
         ray.init()
         trial = Trial(
             "__fake",
-            config={
-                "callbacks": {
-                    "on_episode_start": tune.function(lambda i: i),
-                }
-            },
+            config={"callbacks": {
+                "on_episode_start": lambda i: i,
+            }},
             checkpoint_freq=1)
         tmpdir = tempfile.mkdtemp()
         runner = TrialRunner(local_checkpoint_dir=tmpdir, checkpoint_period=0)

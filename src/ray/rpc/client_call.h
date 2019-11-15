@@ -62,7 +62,7 @@ class ClientCallImpl : public ClientCall {
   ClientCallback<Reply> callback_;
 
   /// The response reader.
-  std::unique_ptr<grpc::ClientAsyncResponseReader<Reply>> response_reader_;
+  std::unique_ptr<grpc_impl::ClientAsyncResponseReader<Reply>> response_reader_;
 
   /// gRPC status of this request.
   grpc::Status status_;
@@ -106,9 +106,9 @@ class ClientCallTag {
 /// \tparam Request Type of the request message.
 /// \tparam Reply Type of the reply message.
 template <class GrpcService, class Request, class Reply>
-using PrepareAsyncFunction = std::unique_ptr<grpc::ClientAsyncResponseReader<Reply>> (
-    GrpcService::Stub::*)(grpc::ClientContext *context, const Request &request,
-                          grpc::CompletionQueue *cq);
+using PrepareAsyncFunction =
+    std::unique_ptr<grpc_impl::ClientAsyncResponseReader<Reply>> (GrpcService::Stub::*)(
+        grpc::ClientContext *context, const Request &request, grpc::CompletionQueue *cq);
 
 /// `ClientCallManager` is used to manage outgoing gRPC requests and the lifecycles of
 /// `ClientCall` objects.
@@ -177,18 +177,28 @@ class ClientCallManager {
   void PollEventsFromCompletionQueue() {
     void *got_tag;
     bool ok = false;
+    auto deadline = gpr_inf_future(GPR_CLOCK_REALTIME);
     // Keep reading events from the `CompletionQueue` until it's shutdown.
-    while (cq_.Next(&got_tag, &ok)) {
-      auto tag = reinterpret_cast<ClientCallTag *>(got_tag);
-      if (ok && !main_service_.stopped()) {
-        // Post the callback to the main event loop.
-        main_service_.post([tag]() {
-          tag->GetCall()->OnReplyReceived();
-          // The call is finished, and we can delete this tag now.
+    // NOTE(edoakes): we use AsyncNext here because for some unknown reason,
+    // synchronous cq_.Next blocks indefinitely in the case that the process
+    // received a SIGTERM.
+    while (true) {
+      auto status = cq_.AsyncNext(&got_tag, &ok, deadline);
+      if (status == grpc::CompletionQueue::SHUTDOWN) {
+        break;
+      }
+      if (status != grpc::CompletionQueue::TIMEOUT) {
+        auto tag = reinterpret_cast<ClientCallTag *>(got_tag);
+        if (ok && !main_service_.stopped()) {
+          // Post the callback to the main event loop.
+          main_service_.post([tag]() {
+            tag->GetCall()->OnReplyReceived();
+            // The call is finished, and we can delete this tag now.
+            delete tag;
+          });
+        } else {
           delete tag;
-        });
-      } else {
-        delete tag;
+        }
       }
     }
   }

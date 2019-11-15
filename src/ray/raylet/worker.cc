@@ -2,7 +2,10 @@
 
 #include <boost/bind.hpp>
 
+#include "ray/raylet/format/node_manager_generated.h"
 #include "ray/raylet/raylet.h"
+#include "src/ray/protobuf/core_worker.grpc.pb.h"
+#include "src/ray/protobuf/core_worker.pb.h"
 
 namespace ray {
 
@@ -10,24 +13,26 @@ namespace raylet {
 
 /// A constructor responsible for initializing the state of a worker.
 Worker::Worker(const WorkerID &worker_id, pid_t pid, const Language &language, int port,
+               std::shared_ptr<LocalClientConnection> connection,
                rpc::ClientCallManager &client_call_manager)
     : worker_id_(worker_id),
       pid_(pid),
-      port_(port),
       language_(language),
+      port_(port),
+      connection_(connection),
+      dead_(false),
       blocked_(false),
-      num_missed_heartbeats_(0),
-      is_being_killed_(false),
-      client_call_manager_(client_call_manager) {
+      client_call_manager_(client_call_manager),
+      is_detached_actor_(false) {
   if (port_ > 0) {
-    rpc_client_ = std::unique_ptr<rpc::WorkerTaskClient>(
-        new rpc::WorkerTaskClient("127.0.0.1", port_, client_call_manager_));
+    rpc_client_ = std::unique_ptr<rpc::CoreWorkerClient>(
+        new rpc::CoreWorkerClient("127.0.0.1", port_, client_call_manager_));
   }
 }
 
-void Worker::MarkAsBeingKilled() { is_being_killed_ = true; }
+void Worker::MarkDead() { dead_ = true; }
 
-bool Worker::IsBeingKilled() const { return is_being_killed_; }
+bool Worker::IsDead() const { return dead_; }
 
 void Worker::MarkBlocked() { blocked_ = true; }
 
@@ -40,8 +45,6 @@ WorkerID Worker::WorkerId() const { return worker_id_; }
 pid_t Worker::Pid() const { return pid_; }
 
 Language Worker::GetLanguage() const { return language_; }
-
-const WorkerID &Worker::GetWorkerId() const { return worker_id_; }
 
 int Worker::Port() const { return port_; }
 
@@ -76,6 +79,14 @@ void Worker::AssignActorId(const ActorID &actor_id) {
 
 const ActorID &Worker::GetActorId() const { return actor_id_; }
 
+void Worker::MarkDetachedActor() { is_detached_actor_ = true; }
+
+bool Worker::IsDetachedActor() const { return is_detached_actor_; }
+
+const std::shared_ptr<LocalClientConnection> Worker::Connection() const {
+  return connection_;
+}
+
 const ResourceIdSet &Worker::GetLifetimeResourceIds() const {
   return lifetime_resource_ids_;
 }
@@ -109,51 +120,74 @@ void Worker::AcquireTaskCpuResources(const ResourceIdSet &cpu_resources) {
   task_resource_ids_.Release(cpu_resources);
 }
 
-void Worker::SetGetTaskReplyAndCallback(
-    rpc::GetTaskReply *reply, const rpc::SendReplyCallback &&send_reply_callback) {
-  RAY_CHECK(reply_ == nullptr && send_reply_callback_ == nullptr);
-  reply_ = reply;
-  send_reply_callback_ = std::move(send_reply_callback);
+const std::unordered_set<ObjectID> &Worker::GetActiveObjectIds() const {
+  return active_object_ids_;
 }
 
-bool Worker::UsePush() const { return rpc_client_ != nullptr; }
+void Worker::SetActiveObjectIds(const std::unordered_set<ObjectID> &&object_ids) {
+  active_object_ids_ = object_ids;
+}
 
-void Worker::AssignTask(const Task &task, const ResourceIdSet &resource_id_set) {
-  const TaskSpecification &spec = task.GetTaskSpecification();
-  if (rpc_client_ != nullptr) {
-    // Use push mode.
-    RAY_CHECK(port_ > 0);
-    rpc::AssignTaskRequest request;
-    request.mutable_task()->mutable_task_spec()->CopyFrom(
-        task.GetTaskSpecification().GetMessage());
-    request.mutable_task()->mutable_task_execution_spec()->CopyFrom(
-        task.GetTaskExecutionSpec().GetMessage());
-    for (const auto &e : resource_id_set.ToProtobuf()) {
-      auto resource = request.add_resource_ids();
-      *resource = e;
+void Worker::AssignTask(const Task &task, const ResourceIdSet &resource_id_set,
+                        const std::function<void(Status)> finish_assign_callback) {
+  RAY_CHECK(port_ > 0);
+  rpc::AssignTaskRequest request;
+  request.mutable_task()->mutable_task_spec()->CopyFrom(
+      task.GetTaskSpecification().GetMessage());
+  request.mutable_task()->mutable_task_execution_spec()->CopyFrom(
+      task.GetTaskExecutionSpec().GetMessage());
+  request.set_resource_ids(resource_id_set.Serialize());
+
+  auto status = rpc_client_->AssignTask(request, [](Status status,
+                                                    const rpc::AssignTaskReply &reply) {
+    if (!status.ok()) {
+      RAY_LOG(DEBUG) << "Worker failed to finish executing task: " << status.ToString();
     }
-    auto status = rpc_client_->AssignTask(
-        request, [](Status status, const rpc::AssignTaskReply &reply) {
-          // Worker has finished this task. There's nothing to do here
-          // and assigning new task will be done when raylet receives
-          // `TaskDone` message.
-        });
+    // Worker has finished this task. There's nothing to do here
+    // and assigning new task will be done when raylet receives
+    // `TaskDone` message.
+  });
+  finish_assign_callback(status);
+  if (!status.ok()) {
+    RAY_LOG(ERROR) << "Failed to assign task " << task.GetTaskSpecification().TaskId()
+                   << " to worker " << worker_id_;
   } else {
-    // Use pull mode. This corresponds to existing python/java workers that haven't been
-    // migrated to core worker architecture.
-    RAY_CHECK(reply_ != nullptr && send_reply_callback_ != nullptr);
-    reply_->set_task_spec(task.GetTaskSpecification().Serialize());
-    for (const auto &e : resource_id_set.ToProtobuf()) {
-      auto resource = reply_->add_fractional_resource_ids();
-      *resource = e;
-    }
-    send_reply_callback_(Status::OK(), nullptr, nullptr);
-    reply_ = nullptr;
-    send_reply_callback_ = nullptr;
+    RAY_LOG(DEBUG) << "Assigned task " << task.GetTaskSpecification().TaskId()
+                   << " to worker " << worker_id_;
   }
-  // The status will be cleared when the worker dies.
-  AssignTaskId(spec.TaskId());
-  AssignJobId(spec.JobId());
+}
+
+void Worker::DirectActorCallArgWaitComplete(int64_t tag) {
+  RAY_CHECK(port_ > 0);
+  rpc::DirectActorCallArgWaitCompleteRequest request;
+  request.set_tag(tag);
+  auto status = rpc_client_->DirectActorCallArgWaitComplete(
+      request, [](Status status, const rpc::DirectActorCallArgWaitCompleteReply &reply) {
+        if (!status.ok()) {
+          RAY_LOG(ERROR) << "Failed to send wait complete: " << status.ToString();
+        }
+      });
+  if (!status.ok()) {
+    RAY_LOG(ERROR) << "Failed to send wait complete: " << status.ToString();
+  }
+}
+
+void Worker::WorkerLeaseGranted(const std::string &address, int port) {
+  RAY_CHECK(!address.empty());
+  RAY_CHECK(port_ > 0);
+  rpc::WorkerLeaseGrantedRequest request;
+  request.set_address(address);
+  request.set_port(port);
+  auto status = rpc_client_->WorkerLeaseGranted(
+      request, [address, port](Status status, const rpc::WorkerLeaseGrantedReply &reply) {
+        if (!status.ok()) {
+          RAY_LOG(ERROR) << "Failed to reply to lease request: " << status.ToString()
+                         << " for " << address << ":" << port;
+        }
+      });
+  if (!status.ok()) {
+    RAY_LOG(ERROR) << "Failed to reply to lease request: " << status.ToString();
+  }
 }
 
 }  // namespace raylet

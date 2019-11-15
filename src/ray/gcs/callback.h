@@ -1,6 +1,11 @@
 #ifndef RAY_GCS_CALLBACK_H
 #define RAY_GCS_CALLBACK_H
 
+#if defined(__clang__) && defined(_MSC_VER)
+// TODO(mehrdadn): Remove this Windows (clang-cl) workaround once we upgrade to
+// Boost > 1.68: https://lists.boost.org/Archives/boost/2018/09/243420.php
+#include <boost/type_traits.hpp>
+#endif
 #include <boost/optional/optional.hpp>
 #include <vector>
 #include "ray/common/status.h"
@@ -19,7 +24,7 @@ using StatusCallback = std::function<void(Status status)>;
 /// this optional object is empty.
 template <typename Data>
 using OptionalItemCallback =
-    std::function<void(Status status, boost::optional<Data> result)>;
+    std::function<void(Status status, const boost::optional<Data> &result)>;
 
 /// This callback is used to receive multiple items from GCS when a read completes.
 /// \param status Status indicates whether the read was successful.

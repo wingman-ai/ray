@@ -20,12 +20,8 @@ RAY_CONFIG(int64_t, ray_cookie, 0x5241590000000000)
 /// warning is logged that the handler is taking too long.
 RAY_CONFIG(int64_t, handler_warning_timeout_ms, 100)
 
-/// The duration between heartbeats. This value is used for both worker and raylet.
-RAY_CONFIG(int64_t, heartbeat_timeout_milliseconds, 100)
-/// Worker heartbeats also use `heartbeat_timeout_milliseconds` as timer timeout period.
-/// If a worker has not sent a heartbeat in the last `num_worker_heartbeats_timeout`
-/// heartbeat intervals, raylet will mark this worker as dead.
-RAY_CONFIG(int64_t, num_worker_heartbeats_timeout, 30)
+/// The duration between heartbeats sent by the raylets.
+RAY_CONFIG(int64_t, raylet_heartbeat_timeout_milliseconds, 100)
 /// If a component has not sent a heartbeat in the last num_heartbeats_timeout
 /// heartbeat intervals, the raylet monitor process will report
 /// it as dead to the db_client table.
@@ -38,11 +34,25 @@ RAY_CONFIG(uint64_t, num_heartbeats_warning, 5)
 /// The duration between dumping debug info to logs, or -1 to disable.
 RAY_CONFIG(int64_t, debug_dump_period_milliseconds, 10000)
 
+/// Whether to enable fair queueing between task classes in raylet. When
+/// fair queueing is enabled, the raylet will try to balance the number
+/// of running tasks by class (i.e., function name). This prevents one
+/// type of task from starving other types (see issue #3664).
+RAY_CONFIG(bool, fair_queueing_enabled, true)
+
+// The max allowed size in bytes of a return object from direct actor calls.
+// Objects larger than this size will be spilled to plasma.
+RAY_CONFIG(int64_t, max_direct_call_object_size, 100 * 1024)
+
 /// The initial period for a task execution lease. The lease will expire this
 /// many milliseconds after the first acquisition of the lease. Nodes that
 /// require an object will not try to reconstruct the task until at least
 /// this many milliseconds.
 RAY_CONFIG(int64_t, initial_reconstruction_timeout_milliseconds, 10000)
+
+/// The duration between heartbeats sent from the workers to the raylet.
+/// If set to a negative value, the heartbeats will not be sent.
+RAY_CONFIG(int64_t, worker_heartbeat_timeout_milliseconds, 500)
 
 /// These are used by the worker to set timeouts and to batch requests when
 /// getting objects.
@@ -82,6 +92,9 @@ RAY_CONFIG(int64_t, max_num_to_reconstruct, 10000)
 /// The maximum number of objects to include in a single fetch request in the
 /// regular raylet fetch timeout handler.
 RAY_CONFIG(int64_t, raylet_fetch_request_size, 10000)
+
+/// The maximum number of active object IDs to report in a heartbeat.
+RAY_CONFIG(size_t, raylet_max_active_object_ids, 1000)
 
 /// The duration that we wait after sending a worker SIGTERM before sending
 /// the worker SIGKILL.
@@ -141,8 +154,11 @@ RAY_CONFIG(int, object_manager_repeated_push_delay_ms, 60000)
 /// chunks exceeds the number of available sending threads.
 RAY_CONFIG(uint64_t, object_manager_default_chunk_size, 1000000)
 
-/// Number of workers per process
-RAY_CONFIG(int, num_workers_per_process, 1)
+/// Number of workers per Python worker process
+RAY_CONFIG(int, num_workers_per_process_python, 1)
+
+/// Number of workers per Java worker process
+RAY_CONFIG(int, num_workers_per_process_java, 10)
 
 /// Maximum timeout in milliseconds within which a task lease must be renewed.
 RAY_CONFIG(int64_t, max_task_lease_timeout_ms, 60000)
@@ -151,13 +167,10 @@ RAY_CONFIG(int64_t, max_task_lease_timeout_ms, 60000)
 /// Note: this number should be set to at least 2. Because saving a application
 /// checkpoint isn't atomic with saving the backend checkpoint, and it will break
 /// if this number is set to 1 and users save application checkpoints in place.
-RAY_CONFIG(uint32_t, num_actor_checkpoints_to_keep, 20)
+RAY_CONFIG(int32_t, num_actor_checkpoints_to_keep, 20)
 
 /// Maximum number of ids in one batch to send to GCS to delete keys.
 RAY_CONFIG(uint32_t, maximum_gcs_deletion_batch_size, 1000)
-
-/// Number of times for a raylet client to retry to register.
-RAY_CONFIG(int, num_raylet_client_retry_times, 25)
 
 /// When getting objects from object store, print a warning every this number of attempts.
 RAY_CONFIG(uint32_t, object_store_get_warn_per_num_attempts, 50)

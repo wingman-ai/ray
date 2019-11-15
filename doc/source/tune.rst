@@ -1,21 +1,24 @@
-Tune: Scalable Hyperparameter Search
-====================================
+Tune: A Scalable Hyperparameter Tuning Library
+==============================================
+
+.. tip:: Help make Tune better by taking our 3 minute `Ray Tune User Survey <https://forms.gle/7u5eH1avbTfpZ3dE6>`_!
 
 .. image:: images/tune.png
     :scale: 30%
     :align: center
 
-Tune is a scalable framework for hyperparameter search and model training with a focus on deep learning and deep reinforcement learning.
+Tune is a Python library for hyperparameter tuning at any scale. Core features:
 
-  * Scale to running on a large distributed cluster without changing your code.
-  * Launch a multi-node Tune experiment in less than 10 lines of code.
-  * Supports any deep learning framework, including PyTorch, TensorFlow, and Keras.
+  * Launch a multi-node distributed hyperparameter sweep in less than 10 lines of code.
+  * Supports any machine learning framework, including PyTorch, XGBoost, MXNet, and Keras.
   * Visualize results with `TensorBoard <https://www.tensorflow.org/get_started/summaries_and_tensorboard>`__.
   * Choose among scalable SOTA algorithms such as `Population Based Training (PBT)`_, `Vizier's Median Stopping Rule`_, `HyperBand/ASHA`_.
+  * Tune integrates with many optimization libraries such as `Facebook Ax <http://ax.dev>`_, `HyperOpt <https://github.com/hyperopt/hyperopt>`_, and `Bayesian Optimization <https://github.com/fmfn/BayesianOptimization>`_ and enables you to scale them transparently.
 
 .. _`Population Based Training (PBT)`: tune-schedulers.html#population-based-training-pbt
 .. _`Vizier's Median Stopping Rule`: tune-schedulers.html#median-stopping-rule
 .. _`HyperBand/ASHA`: tune-schedulers.html#asynchronous-hyperband
+
 
 Quick Start
 -----------
@@ -26,7 +29,7 @@ Quick Start
 
     .. code-block:: bash
 
-        $ pip install ray torch torchvision filelock
+        $ pip install ray[tune] torch torchvision filelock
 
 
 This example runs a small grid search to train a CNN using PyTorch and Tune.
@@ -45,16 +48,12 @@ If TensorBoard is installed, automatically visualize all trial results:
 
 .. image:: images/tune-start-tb.png
 
+If using TF2 and TensorBoard, Tune will also automatically generate TensorBoard HParams output:
+
+.. image:: images/tune-hparams-coord.png
+
 Distributed Quick Start
 -----------------------
-
-.. note::
-
-    This assumes that you have already setup your AWS account and AWS credentials (``aws configure``). To run this example, you will need to install the following:
-
-    .. code-block:: bash
-
-        $ pip install ray torch torchvision filelock
 
 1. Import and initialize Ray by appending the following to your example script.
 
@@ -65,31 +64,41 @@ Distributed Quick Start
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ray-redis-address")
+    parser.add_argument("--ray-address")
     args = parser.parse_args()
-    ray.init(redis_address=args.ray_redis_address)
+    ray.init(address=args.ray_address)
 
 Alternatively, download a full example script here: :download:`mnist_pytorch.py <../../python/ray/tune/examples/mnist_pytorch.py>`
 
-2. Download an example cluster yaml here: :download:`tune-default.yaml <../../python/ray/tune/examples/tune-default.yaml>`
+2. Download the following example Ray cluster configuration as ``tune-local-default.yaml`` and replace the appropriate fields:
+
+.. literalinclude:: ../../python/ray/tune/examples/tune-local-default.yaml
+   :language: yaml
+
+Alternatively, download it here: :download:`tune-local-default.yaml <../../python/ray/tune/examples/tune-local-default.yaml>`. See `Ray cluster docs here <autoscaling.html>`_.
+
 3. Run ``ray submit`` like the following.
 
 .. code-block:: bash
 
-    ray submit tune-default.yaml mnist_pytorch.py --args="--ray-redis-address=localhost:6379" --start
+    ray submit tune-local-default.yaml mnist_pytorch.py --args="--ray-address=localhost:6379" --start
 
-This will start 3 AWS machines and run a distributed hyperparameter search across them. Append ``[--stop]`` to automatically shutdown your nodes afterwards.
+This will start Ray on all of your machines and run a distributed hyperparameter search across them.
 
 To summarize, here are the full set of commands:
 
 .. code-block:: bash
 
     wget https://raw.githubusercontent.com/ray-project/ray/master/python/ray/tune/examples/mnist_pytorch.py
-    wget https://raw.githubusercontent.com/ray-project/ray/master/python/ray/tune/tune-default.yaml
-    ray submit tune-default.yaml mnist_pytorch.py --args="--ray-redis-address=localhost:6379" --start
+    wget https://raw.githubusercontent.com/ray-project/ray/master/python/ray/tune/tune-local-default.yaml
+    ray submit tune-local-default.yaml mnist_pytorch.py --args="--ray-address=localhost:6379" --start
 
 
-Take a look at the `Distributed Experiments <tune-distributed.html>`_ documentation for more details, including setting up distributed experiments on local machines, using GCP, adding resilience to spot instance usage, and more.
+Take a look at the `Distributed Experiments <tune-distributed.html>`_ documentation for more details, including:
+
+ 1. Setting up distributed experiments on your local cluster
+ 2. Using AWS and GCP
+ 3. Spot instance usage/pre-emptible instances, and more.
 
 Getting Started
 ---------------

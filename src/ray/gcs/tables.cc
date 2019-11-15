@@ -1,10 +1,11 @@
 #include "ray/gcs/tables.h"
 
+#include "absl/time/clock.h"
+
 #include "ray/common/common_protocol.h"
 #include "ray/common/grpc_util.h"
 #include "ray/common/ray_config.h"
 #include "ray/gcs/redis_gcs_client.h"
-#include "ray/util/util.h"
 
 namespace {
 
@@ -92,7 +93,7 @@ Status Log<ID, Data>::Lookup(const JobID &job_id, const ID &id, const Callback &
         GcsEntry gcs_entry;
         gcs_entry.ParseFromString(reply.ReadAsString());
         RAY_CHECK(ID::FromBinary(gcs_entry.id()) == id);
-        for (size_t i = 0; i < gcs_entry.entries_size(); i++) {
+        for (int64_t i = 0; i < gcs_entry.entries_size(); i++) {
           Data data;
           data.ParseFromString(gcs_entry.entries(i));
           results.emplace_back(std::move(data));
@@ -142,7 +143,7 @@ Status Log<ID, Data>::Subscribe(const JobID &job_id, const ClientID &client_id,
         gcs_entry.ParseFromString(data);
         ID id = ID::FromBinary(gcs_entry.id());
         std::vector<Data> results;
-        for (size_t i = 0; i < gcs_entry.entries_size(); i++) {
+        for (int64_t i = 0; i < gcs_entry.entries_size(); i++) {
           Data result;
           result.ParseFromString(gcs_entry.entries(i));
           results.emplace_back(std::move(result));
@@ -162,22 +163,44 @@ Status Log<ID, Data>::Subscribe(const JobID &job_id, const ClientID &client_id,
 
 template <typename ID, typename Data>
 Status Log<ID, Data>::RequestNotifications(const JobID &job_id, const ID &id,
-                                           const ClientID &client_id) {
+                                           const ClientID &client_id,
+                                           const StatusCallback &done) {
   RAY_CHECK(subscribe_callback_index_ >= 0)
       << "Client requested notifications on a key before Subscribe completed";
+
+  RedisCallback callback = nullptr;
+  if (done != nullptr) {
+    callback = [done](const CallbackReply &reply) {
+      const auto status = reply.IsNil()
+                              ? Status::OK()
+                              : Status::RedisError("request notifications failed.");
+      done(status);
+    };
+  }
+
   return GetRedisContext(id)->RunAsync("RAY.TABLE_REQUEST_NOTIFICATIONS", id,
                                        client_id.Data(), client_id.Size(), prefix_,
-                                       pubsub_channel_, nullptr);
+                                       pubsub_channel_, callback);
 }
 
 template <typename ID, typename Data>
 Status Log<ID, Data>::CancelNotifications(const JobID &job_id, const ID &id,
-                                          const ClientID &client_id) {
+                                          const ClientID &client_id,
+                                          const StatusCallback &done) {
   RAY_CHECK(subscribe_callback_index_ >= 0)
       << "Client canceled notifications on a key before Subscribe completed";
+
+  RedisCallback callback = nullptr;
+  if (done != nullptr) {
+    callback = [done](const CallbackReply &reply) {
+      const auto status = reply.ReadAsStatus();
+      done(status);
+    };
+  }
+
   return GetRedisContext(id)->RunAsync("RAY.TABLE_CANCEL_NOTIFICATIONS", id,
                                        client_id.Data(), client_id.Size(), prefix_,
-                                       pubsub_channel_, nullptr);
+                                       pubsub_channel_, callback);
 }
 
 template <typename ID, typename Data>
@@ -621,7 +644,8 @@ Status ClientTable::Connect(const GcsNodeInfo &local_node_info) {
     // Callback to request notifications from the client table once we've
     // successfully subscribed.
     auto subscription_callback = [this](RedisGcsClient *c) {
-      RAY_CHECK_OK(RequestNotifications(JobID::Nil(), client_log_key_, node_id_));
+      RAY_CHECK_OK(RequestNotifications(JobID::Nil(), client_log_key_, node_id_,
+                                        /*done*/ nullptr));
     };
     // Subscribe to the client table.
     RAY_CHECK_OK(
@@ -636,7 +660,8 @@ Status ClientTable::Disconnect(const DisconnectCallback &callback) {
   auto add_callback = [this, callback](RedisGcsClient *client, const ClientID &id,
                                        const GcsNodeInfo &data) {
     HandleConnected(client, data);
-    RAY_CHECK_OK(CancelNotifications(JobID::Nil(), client_log_key_, id));
+    RAY_CHECK_OK(
+        CancelNotifications(JobID::Nil(), client_log_key_, id, /*done*/ nullptr));
     if (callback != nullptr) {
       callback();
     }
@@ -685,17 +710,16 @@ Status ActorCheckpointIdTable::AddCheckpointId(const JobID &job_id,
                                                const ActorID &actor_id,
                                                const ActorCheckpointID &checkpoint_id) {
   auto lookup_callback = [this, checkpoint_id, job_id, actor_id](
-                             ray::gcs::RedisGcsClient *client, const UniqueID &id,
+                             ray::gcs::RedisGcsClient *client, const ActorID &id,
                              const ActorCheckpointIdData &data) {
     std::shared_ptr<ActorCheckpointIdData> copy =
         std::make_shared<ActorCheckpointIdData>(data);
-    copy->add_timestamps(current_sys_time_ms());
+    copy->add_timestamps(absl::GetCurrentTimeNanos() / 1000000);
     copy->add_checkpoint_ids(checkpoint_id.Binary());
     auto num_to_keep = RayConfig::instance().num_actor_checkpoints_to_keep();
     while (copy->timestamps().size() > num_to_keep) {
       // Delete the checkpoint from actor checkpoint table.
       const auto &to_delete = ActorCheckpointID::FromBinary(copy->checkpoint_ids(0));
-      RAY_LOG(DEBUG) << "Deleting checkpoint " << to_delete << " for actor " << actor_id;
       copy->mutable_checkpoint_ids()->erase(copy->mutable_checkpoint_ids()->begin());
       copy->mutable_timestamps()->erase(copy->mutable_timestamps()->begin());
       client_->actor_checkpoint_table().Delete(job_id, to_delete);
@@ -703,11 +727,11 @@ Status ActorCheckpointIdTable::AddCheckpointId(const JobID &job_id,
     RAY_CHECK_OK(Add(job_id, actor_id, copy, nullptr));
   };
   auto failure_callback = [this, checkpoint_id, job_id, actor_id](
-                              ray::gcs::RedisGcsClient *client, const UniqueID &id) {
+                              ray::gcs::RedisGcsClient *client, const ActorID &id) {
     std::shared_ptr<ActorCheckpointIdData> data =
         std::make_shared<ActorCheckpointIdData>();
     data->set_actor_id(id.Binary());
-    data->add_timestamps(current_sys_time_ms());
+    data->add_timestamps(absl::GetCurrentTimeNanos() / 1000000);
     *data->add_checkpoint_ids() = checkpoint_id.Binary();
     RAY_CHECK_OK(Add(job_id, actor_id, data, nullptr));
   };

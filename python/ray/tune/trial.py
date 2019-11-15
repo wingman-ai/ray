@@ -10,7 +10,6 @@ import uuid
 import time
 import tempfile
 import os
-import ray
 from ray.tune import TuneError
 from ray.tune.logger import pretty_print, UnifiedLogger
 # NOTE(rkn): We import ray.tune.registry here instead of importing the names we
@@ -30,26 +29,6 @@ logger = logging.getLogger(__name__)
 
 def date_str():
     return datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def has_trainable(trainable_name):
-    return ray.tune.registry._global_registry.contains(
-        ray.tune.registry.TRAINABLE_CLASS, trainable_name)
-
-
-def recursive_criteria_check(result, criteria):
-    for criteria, stop_value in criteria.items():
-        if criteria not in result:
-            raise TuneError(
-                "Stopping criteria {} not provided in result {}.".format(
-                    criteria, result))
-        elif isinstance(result[criteria], dict) and isinstance(
-                stop_value, dict):
-            if recursive_criteria_check(result[criteria], stop_value):
-                return True
-        elif result[criteria] >= stop_value:
-            return True
-    return False
 
 
 class Checkpoint(object):
@@ -123,6 +102,7 @@ class Trial(object):
                  config=None,
                  trial_id=None,
                  local_dir=DEFAULT_RESULTS_DIR,
+                 evaluated_params=None,
                  experiment_tag="",
                  resources=None,
                  stopping_criterion=None,
@@ -142,14 +122,17 @@ class Trial(object):
         in ray.tune.config_parser.
         """
 
-        Trial._registration_check(trainable_name)
+        validate_trainable(trainable_name)
         # Trial config
         self.trainable_name = trainable_name
         self.trial_id = Trial.generate_id() if trial_id is None else trial_id
         self.config = config or {}
         self.local_dir = local_dir  # This remains unexpanded for syncing.
+
+        #: Parameters that Tune varies across searches.
+        self.evaluated_params = evaluated_params or {}
         self.experiment_tag = experiment_tag
-        trainable_cls = self._get_trainable_cls()
+        trainable_cls = self.get_trainable_cls()
         if trainable_cls and hasattr(trainable_cls,
                                      "default_resource_request"):
             default_resources = trainable_cls.default_resource_request(
@@ -193,6 +176,7 @@ class Trial(object):
         self.result_logger = None
         self.last_debug = 0
         self.error_file = None
+        self.error_msg = None
         self.num_failures = 0
         self.custom_trial_name = None
 
@@ -213,14 +197,6 @@ class Trial(object):
         ]
         if trial_name_creator:
             self.custom_trial_name = trial_name_creator(self)
-
-    @classmethod
-    def _registration_check(cls, trainable_name):
-        if not has_trainable(trainable_name):
-            # Make sure rllib agents are registered
-            from ray import rllib  # noqa: F401
-            if not has_trainable(trainable_name):
-                raise TuneError("Unknown trainable: " + trainable_name)
 
     @classmethod
     def generate_id(cls):
@@ -247,6 +223,7 @@ class Trial(object):
             self.result_logger = UnifiedLogger(
                 self.config,
                 self.logdir,
+                trial=self,
                 loggers=self.loggers,
                 sync_function=self.sync_to_driver_fn)
 
@@ -285,6 +262,7 @@ class Trial(object):
             with open(error_file, "w") as f:
                 f.write(error_msg)
             self.error_file = error_file
+            self.error_msg = error_msg
 
     def should_stop(self, result):
         """Whether the given result meets this trial's stopping criteria."""
@@ -292,7 +270,21 @@ class Trial(object):
         if result.get(DONE):
             return True
 
-        return recursive_criteria_check(result, self.stopping_criterion)
+        if callable(self.stopping_criterion):
+            return self.stopping_criterion(self.trial_id, result)
+
+        for criteria, stop_value in self.stopping_criterion.items():
+            if criteria not in result:
+                raise TuneError(
+                    "Stopping criteria {} not provided in result {}.".format(
+                        criteria, result))
+            elif isinstance(criteria, dict):
+                raise ValueError(
+                    "Stopping criteria is now flattened by default. "
+                    "Use forward slashes to nest values `key1/key2/key3`.")
+            elif result[criteria] >= stop_value:
+                return True
+        return False
 
     def should_checkpoint(self):
         """Whether this trial is due for checkpointing."""
@@ -306,6 +298,22 @@ class Trial(object):
                               0) % self.checkpoint_freq == 0
         else:
             return False
+
+    def has_checkpoint(self):
+        return self._checkpoint.value is not None
+
+    def clear_checkpoint(self):
+        self._checkpoint.value = None
+
+    def should_recover(self):
+        """Returns whether the trial qualifies for retrying.
+
+        This is if the trial has not failed more than max_failures. Note this
+        may return true even when there is no checkpoint, either because
+        `self.checkpoint_freq` is `0` or because the trial failed before
+        a checkpoint has been made.
+        """
+        return self.num_failures < self.max_failures or self.max_failures < 0
 
     def progress_string(self):
         """Returns a progress message for printing out to the console."""
@@ -322,10 +330,10 @@ class Trial(object):
         pieces = [
             "{}".format(self._status_string()), "[{}]".format(
                 self.resources.summary_string()), "[{}]".format(
-                    location_string(
-                        self.last_result.get(HOSTNAME),
-                        self.last_result.get(PID))), "{} s".format(
-                            int(self.last_result.get(TIME_TOTAL_S)))
+                location_string(
+                    self.last_result.get(HOSTNAME),
+                    self.last_result.get(PID))), "{} s".format(
+                int(self.last_result.get(TIME_TOTAL_S)))
         ]
 
         if self.last_result.get(TRAINING_ITERATION) is not None:
@@ -357,25 +365,10 @@ class Trial(object):
                                                     self.error_file)
             if self.error_file else "")
 
-    def has_checkpoint(self):
-        return self._checkpoint.value is not None
-
-    def clear_checkpoint(self):
-        self._checkpoint.value = None
-
-    def should_recover(self):
-        """Returns whether the trial qualifies for restoring.
-
-        This is if a checkpoint frequency is set and has not failed more than
-        max_failures. This may return true even when there may not yet
-        be a checkpoint.
-        """
-        return (self.checkpoint_freq > 0
-                and (self.num_failures < self.max_failures
-                     or self.max_failures < 0))
-
     def update_last_result(self, result, terminate=False):
         result.update(trial_id=self.trial_id, done=terminate)
+        if self.experiment_tag:
+            result.update(experiment_tag=self.experiment_tag)
         if self.verbose and (terminate or time.time() - self.last_debug >
                              DEBUG_PRINT_INTERVAL):
             print("Result for {}:".format(self))
@@ -407,9 +400,8 @@ class Trial(object):
             return True
         return False
 
-    def _get_trainable_cls(self):
-        return ray.tune.registry._global_registry.get(
-            ray.tune.registry.TRAINABLE_CLASS, self.trainable_name)
+    def get_trainable_cls(self):
+        return get_trainable_cls(self.trainable_name)
 
     def set_verbose(self, verbose):
         self.verbose = verbose
@@ -425,7 +417,7 @@ class Trial(object):
         return str(self)
 
     def __str__(self):
-        """Combines ``env`` with ``trainable_name`` and ``experiment_tag``.
+        """Combines ``env`` with ``trainable_name`` and ``trial_id``.
 
         Can be overriden with a custom string creator.
         """
@@ -439,8 +431,7 @@ class Trial(object):
             identifier = "{}_{}".format(self.trainable_name, env)
         else:
             identifier = self.trainable_name
-        if self.experiment_tag:
-            identifier += "_" + self.experiment_tag
+        identifier += "_" + self.trial_id
         return identifier.replace("/", "_")
 
     def __getstate__(self):
@@ -475,6 +466,6 @@ class Trial(object):
             state[key] = cloudpickle.loads(hex_to_binary(state[key]))
 
         self.__dict__.update(state)
-        Trial._registration_check(self.trainable_name)
+        validate_trainable(self.trainable_name)
         if logger_started:
             self.init_logger()

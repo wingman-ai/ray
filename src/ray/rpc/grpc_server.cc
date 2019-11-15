@@ -2,16 +2,37 @@
 #include "src/ray/rpc/grpc_server.h"
 #include <grpcpp/impl/service_type.h>
 
+namespace {
+
+bool PortNotInUse(int port) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd == -1) {
+    return false;
+  }
+  struct sockaddr_in server_addr = {0};
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons(port);
+  int err = bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+  close(fd);
+  return err == 0;
+}
+
+}  // namespace
+
 namespace ray {
 namespace rpc {
 
 void GrpcServer::Run() {
-  std::string server_address;
-  // Set unix domain socket or tcp address.
-  if (!unix_socket_path_.empty()) {
-    server_address = "unix://" + unix_socket_path_;
-  } else {
-    server_address = "0.0.0.0:" + std::to_string(port_);
+  std::string server_address("0.0.0.0:" + std::to_string(port_));
+  // Unfortunately, grpc will not return an error if the specified port is in
+  // use. There is a race condition here where two servers could check the same
+  // port, but only one would succeed in binding.
+  if (port_ > 0) {
+    RAY_CHECK(PortNotInUse(port_))
+        << "Port " << port_
+        << " specified by caller already in use. Try passing node_manager_port=... into "
+           "ray.init() to pick a specific port";
   }
 
   grpc::ServerBuilder builder;
@@ -19,7 +40,7 @@ void GrpcServer::Run() {
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials(), &port_);
   // Register all the services to this server.
   if (services_.empty()) {
-    RAY_LOG(WARNING) << "No service found when start grpc server " << name_;
+    RAY_LOG(WARNING) << "No service is found when start grpc server " << name_;
   }
   for (auto &entry : services_) {
     builder.RegisterService(&entry.get());
@@ -29,11 +50,7 @@ void GrpcServer::Run() {
   cq_ = builder.AddCompletionQueue();
   // Build and start server.
   server_ = builder.BuildAndStart();
-  if (unix_socket_path_.empty()) {
-    // For a TCP-based server, the actual port is decided after `AddListeningPort`.
-    server_address = "0.0.0.0:" + std::to_string(port_);
-  }
-  RAY_LOG(INFO) << name_ << " server started, listening on " << server_address;
+  RAY_LOG(INFO) << name_ << " server started, listening on port " << port_ << ".";
 
   // Create calls for all the server call factories.
   for (auto &entry : server_call_factories_and_concurrencies_) {
@@ -64,9 +81,7 @@ void GrpcServer::PollEventsFromCompletionQueue() {
       switch (server_call->GetState()) {
       case ServerCallState::PENDING:
         // We've received a new incoming request. Now this call object is used to
-        // track this request. So we need to create another call to handle next
-        // incoming request.
-        server_call->GetFactory().CreateCall();
+        // track this request.
         server_call->SetState(ServerCallState::PROCESSING);
         server_call->HandleRequest();
         break;

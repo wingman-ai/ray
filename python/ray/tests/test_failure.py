@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import json
 import os
-import pyarrow.plasma as plasma
 import pytest
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from ray.tests.cluster_utils import Cluster
 from ray.tests.utils import (
     relevant_errors,
     wait_for_errors,
+    RayTestTimeoutException,
 )
 
 
@@ -63,14 +63,20 @@ def test_failed_task(ray_start_regular):
             # ray.get should throw an exception.
             assert False
 
+    class CustomException(ValueError):
+        pass
+
     @ray.remote
     def f():
-        raise Exception("This function failed.")
+        raise CustomException("This function failed.")
 
     try:
         ray.get(f.remote())
     except Exception as e:
         assert "This function failed." in str(e)
+        assert isinstance(e, CustomException)
+        assert isinstance(e, ray.exceptions.RayTaskError)
+        assert "RayTaskError(CustomException)" in repr(e)
     else:
         # ray.get should throw an exception.
         assert False
@@ -286,7 +292,9 @@ def test_incorrect_method_calls(ray_start_regular):
 def test_worker_raising_exception(ray_start_regular):
     @ray.remote
     def f():
-        ray.worker.global_worker._get_next_task_from_raylet = None
+        # This is the only reasonable variable we can set here that makes the
+        # execute_task function fail after the task got executed.
+        ray.experimental.signal.reset = None
 
     # Running this task should cause the worker to raise an exception after
     # the task has successfully completed.
@@ -482,13 +490,17 @@ def test_version_mismatch(shutdown_only):
     ray.__version__ = ray_version
 
 
-def test_warning_monitor_died(shutdown_only):
-    ray.init(num_cpus=0)
+def test_warning_monitor_died(ray_start_2_cpus):
+    @ray.remote
+    def f():
+        pass
 
-    time.sleep(1)  # Make sure the monitor has started.
+    # Wait for the monitor process to start.
+    ray.get(f.remote())
+    time.sleep(1)
 
     # Cause the monitor to raise an exception by pushing a malformed message to
-    # Redis. This will probably kill the raylets and the raylet_monitor in
+    # Redis. This will probably kill the raylet and the raylet_monitor in
     # addition to the monitor.
     fake_id = 20 * b"\x00"
     malformed_message = "asdf"
@@ -525,6 +537,27 @@ def test_export_large_objects(ray_start_regular):
 
     # Make sure that a warning is generated.
     wait_for_errors(ray_constants.PICKLING_LARGE_OBJECT_PUSH_ERROR, 2)
+
+
+def test_warning_for_resource_deadlock(shutdown_only):
+    # Check that we get warning messages for infeasible tasks.
+    ray.init(num_cpus=1)
+
+    @ray.remote(num_cpus=1)
+    class Foo(object):
+        def f(self):
+            return 0
+
+    @ray.remote
+    def f():
+        # Creating both actors is not possible.
+        actors = [Foo.remote() for _ in range(2)]
+        for a in actors:
+            ray.get(a.f.remote())
+
+    # Run in a task to check we handle the blocked task case correctly
+    f.remote()
+    wait_for_errors(ray_constants.RESOURCE_DEADLOCK_ERROR, 1, timeout=30)
 
 
 def test_warning_for_infeasible_tasks(ray_start_regular):
@@ -592,11 +625,16 @@ def test_warning_for_too_many_nested_tasks(shutdown_only):
         return 1
 
     @ray.remote
+    def h():
+        time.sleep(1)
+        ray.get(f.remote())
+
+    @ray.remote
     def g():
         # Sleep so that the f tasks all get submitted to the scheduler after
         # the g tasks.
         time.sleep(1)
-        ray.get(f.remote())
+        ray.get(h.remote())
 
     [g.remote() for _ in range(num_cpus * 4)]
     wait_for_errors(ray_constants.WORKER_POOL_LARGE_ERROR, 1)
@@ -604,20 +642,18 @@ def test_warning_for_too_many_nested_tasks(shutdown_only):
 
 def test_redis_module_failure(ray_start_regular):
     address_info = ray_start_regular
-    redis_address = address_info["redis_address"]
-    redis_address = redis_address.split(":")
-    assert len(redis_address) == 2
+    address = address_info["redis_address"]
+    address = address.split(":")
+    assert len(address) == 2
 
     def run_failure_test(expecting_message, *command):
         with pytest.raises(
                 Exception, match=".*{}.*".format(expecting_message)):
-            client = redis.StrictRedis(
-                host=redis_address[0], port=int(redis_address[1]))
+            client = redis.StrictRedis(host=address[0], port=int(address[1]))
             client.execute_command(*command)
 
     def run_one_command(*command):
-        client = redis.StrictRedis(
-            host=redis_address[0], port=int(redis_address[1]))
+        client = redis.StrictRedis(host=address[0], port=int(address[1]))
         client.execute_command(*command)
 
     run_failure_test("wrong number of arguments", "RAY.TABLE_ADD", 13)
@@ -680,8 +716,6 @@ def test_warning_for_dead_node(ray_start_cluster_2_nodes):
 
 
 def test_raylet_crash_when_get(ray_start_regular):
-    nonexistent_id = ray.ObjectID.from_random()
-
     def sleep_to_kill_raylet():
         # Don't kill raylet before default workers get connected.
         time.sleep(2)
@@ -690,18 +724,18 @@ def test_raylet_crash_when_get(ray_start_regular):
     thread = threading.Thread(target=sleep_to_kill_raylet)
     thread.start()
     with pytest.raises(ray.exceptions.UnreconstructableError):
-        ray.get(nonexistent_id)
+        ray.get(ray.ObjectID.from_random())
     thread.join()
 
 
 def test_connect_with_disconnected_node(shutdown_only):
     config = json.dumps({
         "num_heartbeats_timeout": 50,
-        "heartbeat_timeout_milliseconds": 10,
+        "raylet_heartbeat_timeout_milliseconds": 10,
     })
     cluster = Cluster()
     cluster.add_node(num_cpus=0, _internal_config=config)
-    ray.init(redis_address=cluster.redis_address)
+    ray.init(address=cluster.address)
     info = relevant_errors(ray_constants.REMOVED_NODE_ERROR)
     assert len(info) == 0
     # This node is killed by SIGKILL, ray_monitor will mark it to dead.
@@ -715,7 +749,7 @@ def test_connect_with_disconnected_node(shutdown_only):
     # This node is killed by SIGTERM, ray_monitor will not mark it again.
     removing_node = cluster.add_node(num_cpus=0, _internal_config=config)
     cluster.remove_node(removing_node, allow_graceful=True)
-    with pytest.raises(Exception, match=("Timing out of wait.")):
+    with pytest.raises(RayTestTimeoutException):
         wait_for_errors(ray_constants.REMOVED_NODE_ERROR, 3, timeout=2)
     # There is no connection error to a dead node.
     info = relevant_errors(ray_constants.RAYLET_CONNECTION_ERROR)
@@ -725,7 +759,7 @@ def test_connect_with_disconnected_node(shutdown_only):
 @pytest.mark.parametrize(
     "ray_start_cluster_head", [{
         "num_cpus": 5,
-        "object_store_memory": 10**7
+        "object_store_memory": 10**8
     }],
     indirect=True)
 @pytest.mark.parametrize("num_actors", [1, 2, 5])
@@ -733,7 +767,7 @@ def test_parallel_actor_fill_plasma_retry(ray_start_cluster_head, num_actors):
     @ray.remote
     class LargeMemoryActor(object):
         def some_expensive_task(self):
-            return np.zeros(10**7 // 2, dtype=np.uint8)
+            return np.zeros(10**8 // 2, dtype=np.uint8)
 
     actors = [LargeMemoryActor.remote() for _ in range(num_actors)]
     for _ in range(10):
@@ -745,14 +779,14 @@ def test_parallel_actor_fill_plasma_retry(ray_start_cluster_head, num_actors):
 @pytest.mark.parametrize(
     "ray_start_cluster_head", [{
         "num_cpus": 2,
-        "object_store_memory": 10**7
+        "object_store_memory": 10**8
     }],
     indirect=True)
-def test_fill_plasma_exception(ray_start_cluster_head):
+def test_fill_object_store_exception(ray_start_cluster_head):
     @ray.remote
     class LargeMemoryActor(object):
         def some_expensive_task(self):
-            return np.zeros(10**7 + 2, dtype=np.uint8)
+            return np.zeros(10**8 + 2, dtype=np.uint8)
 
         def test(self):
             return 1
@@ -763,5 +797,5 @@ def test_fill_plasma_exception(ray_start_cluster_head):
     # Make sure actor does not die
     ray.get(actor.test.remote())
 
-    with pytest.raises(plasma.PlasmaStoreFull):
-        ray.put(np.zeros(10**7 + 2, dtype=np.uint8))
+    with pytest.raises(ray.exceptions.ObjectStoreFullError):
+        ray.put(np.zeros(10**8 + 2, dtype=np.uint8))

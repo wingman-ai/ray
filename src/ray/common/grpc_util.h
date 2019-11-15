@@ -4,6 +4,8 @@
 #include <google/protobuf/map.h>
 #include <google/protobuf/repeated_field.h>
 #include <grpcpp/grpcpp.h>
+
+#include <sstream>
 #include "status.h"
 
 namespace ray {
@@ -39,7 +41,7 @@ class MessageWrapper {
   const Message &GetMessage() const { return *message_; }
 
   /// Get reference of the protobuf message.
-  Message &GetMutableMessage() const { return *message_; }
+  Message &GetMutableMessage() { return *message_; }
 
   /// Serialize the message to a string.
   const std::string Serialize() const { return message_->SerializeAsString(); }
@@ -64,7 +66,11 @@ inline Status GrpcStatusToRayStatus(const grpc::Status &grpc_status) {
   if (grpc_status.ok()) {
     return Status::OK();
   } else {
-    return Status::IOError(grpc_status.error_message());
+    std::stringstream msg;
+    msg << grpc_status.error_code();
+    msg << ": ";
+    msg << grpc_status.error_message();
+    return Status::IOError(msg.str());
   }
 }
 
@@ -80,17 +86,6 @@ template <class T>
 inline std::vector<T> VectorFromProtobuf(
     const ::google::protobuf::RepeatedField<T> &pb_repeated) {
   return std::vector<T>(pb_repeated.begin(), pb_repeated.end());
-}
-
-template <typename Message>
-using AddFunction = void (Message::*)(const ::std::string &value);
-/// Add a vector of type ID to protobuf message.
-template <typename ID, typename Message>
-inline void IdVectorToProtobuf(const std::vector<ID> &ids, Message &message,
-                               AddFunction<Message> add_func) {
-  for (const auto &id : ids) {
-    (message.*add_func)(id.Binary());
-  }
 }
 
 /// Converts a Protobuf `RepeatedField` to a vector of IDs.

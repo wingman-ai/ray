@@ -1,5 +1,7 @@
 #include "task_dependency_manager.h"
 
+#include "absl/time/clock.h"
+
 #include "ray/stats/stats.h"
 
 namespace ray {
@@ -204,6 +206,8 @@ void TaskDependencyManager::SubscribeWaitDependencies(
       auto inserted = worker_entry.insert(object_id);
       if (inserted.second) {
         // Get the ID of the task that creates the dependency.
+        // TODO(qwang): Refine here to:
+        // if (object_id.CreatedByTask()) {// ...}
         TaskID creating_task_id = object_id.TaskId();
         // Add the subscribed worker to the mapping from object ID to list of
         // dependent workers.
@@ -346,7 +350,7 @@ void TaskDependencyManager::AcquireTaskLease(const TaskID &task_id) {
 
   auto task_lease_data = std::make_shared<TaskLeaseData>();
   task_lease_data->set_node_manager_id(client_id_.Hex());
-  task_lease_data->set_acquired_at(current_sys_time_ms());
+  task_lease_data->set_acquired_at(absl::GetCurrentTimeNanos() / 1000000);
   task_lease_data->set_timeout(it->second.lease_period);
   RAY_CHECK_OK(task_lease_table_.Add(JobID::Nil(), task_id, task_lease_data, nullptr));
 
